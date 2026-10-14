@@ -1,15 +1,10 @@
-"""Переносимость проекта: каталог → другой каталог → повторное открытие (§7.1 R5).
-
-Проверяет:
-- manifest.json и project.sqlite сохраняют ссылки на captures/blobs;
-- после копирования в другой каталог все sha256 совпадают;
-- verify и report работают из нового места;
-- run_hash не меняется при переносе.
-"""
+"""Переносимость проекта: каталог → другой каталог → повторное открытие (§7.1 R5)."""
 from __future__ import annotations
 
+import gc
 import json
 import shutil
+import time
 from pathlib import Path
 
 import pytest
@@ -18,13 +13,29 @@ from taptuna.manifest import create_manifest, load_manifest
 from taptuna.store import init_db, open_db, write_blob, read_blob
 
 
+def _safe_rmtree(path: Path, max_attempts: int = 10, delay: float = 0.2) -> None:
+    """Удаляет каталог с ретраями.
+
+    На Windows SQLite может держать handle project.sqlite до следующего GC.
+    Решение — gc.collect() + повторные попытки.
+    """
+    for attempt in range(max_attempts):
+        gc.collect()
+        try:
+            shutil.rmtree(path)
+            return
+        except PermissionError:
+            if attempt == max_attempts - 1:
+                raise
+            time.sleep(delay)
+
+
 def _seed_project(project: Path) -> tuple[int, int]:
     """Наполняет проект: capture + session + direction + packet +
     interpretation + corpus. Возвращает (corpus_id, interp_id)."""
     conn = open_db(project)
     cur = conn.cursor()
 
-    # capture с реальным pcap-файлом (просто случайные байты)
     pcap_dir = project / "captures"
     pcap_dir.mkdir(exist_ok=True)
     pcap_bytes = b"\x00\x01\x02\x03" * 100
@@ -60,7 +71,6 @@ def _seed_project(project: Path) -> tuple[int, int]:
     )
     did = cur.lastrowid
 
-    # Blob > 4 КиБ — проверяем CAS после переноса
     big_payload = b"B" * 8192
     blob_sha = write_blob(project, big_payload)
 
@@ -92,7 +102,6 @@ def _seed_project(project: Path) -> tuple[int, int]:
     )
     corpus_id = cur.lastrowid
 
-    # action_log — просто запись в таблице + файл entries
     al_dir = project / "action_log"
     al_dir.mkdir(exist_ok=True)
     (al_dir / "test.entries.json").write_text("[]", encoding="utf-8")
@@ -114,19 +123,16 @@ def _check_project_consistent(project: Path) -> None:
     try:
         cur = conn.cursor()
 
-        # captures → captures/<sha>.pcap
         cur.execute("SELECT sha256, filename FROM captures")
         for row in cur.fetchall():
             pcap = project / "captures" / f"{row['sha256']}.pcap"
             assert pcap.exists(), f"missing capture: {pcap}"
 
-        # packets с payload_sha256 (внешний blob) → blobs/<sha>.bin
         cur.execute(
             "SELECT payload_sha256 FROM packets WHERE payload_sha256 IS NOT NULL"
         )
         for row in cur.fetchall():
             sha = row["payload_sha256"]
-            # Проверим только те, у которых payload_inline IS NULL
             cur.execute(
                 """SELECT payload_inline FROM packets
                    WHERE payload_sha256 = ? LIMIT 1""",
@@ -148,24 +154,17 @@ def test_copy_preserves_project(tmp_path):
     init_db(src)
     corpus_id, interp_id = _seed_project(src)
 
-    # Проверяем исходник
     _check_project_consistent(src)
 
-    # Копируем целиком
     dst = tmp_path / "dst" / "proj_moved"
     shutil.copytree(src, dst)
+    _safe_rmtree(src)
 
-    # Старый каталог удаляем — если что-то ссылается абсолютно, упадёт
-    shutil.rmtree(src)
-
-    # Проверяем новый каталог
     _check_project_consistent(dst)
 
-    # Manifest валиден
     m = load_manifest(dst)
     assert m["schema_version"] == 1
 
-    # Verify работает в новом месте
     from taptuna.verification import verify_corpus
     result = verify_corpus(
         project_dir=dst,
@@ -191,7 +190,7 @@ def test_run_hash_identical_after_move(tmp_path):
 
     dst = tmp_path / "dst" / "proj_moved"
     shutil.copytree(src, dst)
-    shutil.rmtree(src)
+    _safe_rmtree(src)
 
     r2 = verify_corpus(dst, corpus_id=corpus_id,
                        interpretation_id=interp_id, seed=42)
@@ -216,25 +215,23 @@ def test_blob_cas_survives_move(tmp_path):
 
     dst = tmp_path / "dst" / "proj_moved"
     shutil.copytree(src, dst)
-    shutil.rmtree(src)
+    _safe_rmtree(src)
 
     assert read_blob(dst, sha) == data
 
 
 def test_relative_paths_in_manifest(tmp_path):
-    """В манифесте и БД нет абсолютных путей к /tmp/... (кроме стандартных)."""
+    """В манифесте и БД нет абсолютных путей."""
     project = tmp_path / "proj"
     project.mkdir(parents=True)
     create_manifest(project)
     init_db(project)
     _seed_project(project)
 
-    # Manifest не должен содержать абсолютных путей проекта
     m = load_manifest(project)
     text = json.dumps(m)
     assert str(project) not in text, "manifest содержит абсолютный путь проекта"
 
-    # source_path в action_log — относительный
     conn = open_db(project)
     try:
         cur = conn.cursor()
