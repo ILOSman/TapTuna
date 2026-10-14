@@ -41,6 +41,11 @@ class ValidationError(ProtocolLabError):
     """Ошибка валидации входных данных."""
     http_status = 400
 
+class TsharkFailedError(ProtocolLabError):
+    http_status = 502
+
+class TsharkOutputTooLargeError(ProtocolLabError):
+    http_status = 413
 
 class NotImplementedYetError(ProtocolLabError):
     """Функциональность не реализована на этом этапе."""

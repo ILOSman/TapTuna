@@ -3,6 +3,10 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+test.pcap
+2024-09-04-traffic-analysis-exercise.pcap
+socks-http-example.pcap
+
 # C extensions
 *.so
 
