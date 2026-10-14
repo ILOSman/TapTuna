@@ -511,6 +511,23 @@ def ingest_capture(
     cur.execute("SELECT id FROM captures WHERE sha256 = ?", (sha,))
     capture_id = cur.fetchone()[0]
 
+    # Проверим, был ли уже импорт
+    cur.execute("SELECT COUNT(*) FROM sessions WHERE capture_id = ?", (capture_id,))
+    existing = cur.fetchone()[0]
+    if existing > 0:
+        progress(
+            f"warning: повторный импорт sha256={sha[:16]}…, "
+            f"перезапись {existing} сессий",
+            0.5,
+        )
+
+    # Идемпотентность: если capture уже был импортирован — удаляем
+    # его сессии (каскадно уйдут directions, packets, stream_segments),
+    # чтобы повторный ingest того же файла перезаписал данные, а не упал
+    # на UNIQUE(capture_id, stream_index).
+    cur.execute("DELETE FROM sessions WHERE capture_id = ?", (capture_id,))
+    conn.commit()
+
     total = len(sessions) or 1
     for i, s in enumerate(sessions.values()):
         # reassembly для каждого направления

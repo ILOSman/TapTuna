@@ -1,0 +1,109 @@
+{% extends "base.html" %}
+{% block title %}Отчёт{% endblock %}
+{% block content %}
+
+<h1>Отчёт</h1>
+
+<section class="card">
+  <h2>Сгенерировать</h2>
+  <div class="row">
+    <label>Прогон:</label>
+    <select id="gen-run" style="min-width:320px">
+      <option value="">Последний завершённый</option>
+      {% for r in runs %}
+      <option value="{{ r.id }}">
+        #{{ r.id }} — {{ r.corpus_name or "?" }} / {{ r.interp_name or "?" }}@v{{ r.interp_version }}
+        ({{ r.verdict or "?" }})
+      </option>
+      {% endfor %}
+    </select>
+    <label class="row small">
+      <input type="checkbox" id="fmt-md" checked> MD
+      <input type="checkbox" id="fmt-html" checked> HTML
+      <input type="checkbox" id="fmt-json" checked> machine_model
+    </label>
+    <button id="gen-btn" class="primary">Сгенерировать</button>
+  </div>
+  <div id="gen-progress" hidden style="margin-top:0.6rem">
+    <p class="small muted" id="gen-msg">…</p>
+    <div class="progress"><div id="gen-bar" style="width:0%"></div></div>
+  </div>
+</section>
+
+<section class="card">
+  <h2>Файлы ({{ reports|length }})</h2>
+  {% if reports %}
+  <table>
+    <thead>
+      <tr><th>Файл</th><th>Размер</th><th>Создан</th><th></th></tr>
+    </thead>
+    <tbody>
+      {% for r in reports %}
+      <tr>
+        <td class="mono small">{{ r.name }}</td>
+        <td>{{ (r.size / 1024) | round(1) }} KiB</td>
+        <td class="small">{{ r.mtime | int }}</td>
+        <td>
+          <a class="btn" href="/reports/{{ r.name }}" target="_blank">Открыть</a>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">Отчётов нет.</p>
+  {% endif %}
+</section>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  const genRun = document.getElementById("gen-run");
+  const fmtMd = document.getElementById("fmt-md");
+  const fmtHtml = document.getElementById("fmt-html");
+  const fmtJson = document.getElementById("fmt-json");
+  const genBtn = document.getElementById("gen-btn");
+  const genProgress = document.getElementById("gen-progress");
+  const genMsg = document.getElementById("gen-msg");
+  const genBar = document.getElementById("gen-bar");
+
+  genBtn.addEventListener("click", async () => {
+    const formats = [];
+    if (fmtMd.checked) formats.push("md");
+    if (fmtHtml.checked) formats.push("html");
+    if (fmtJson.checked) formats.push("json");
+    if (!formats.length) { window.taptuna.toast("Выберите хотя бы один формат", "err"); return; }
+
+    genProgress.hidden = false;
+    genMsg.textContent = "Запуск...";
+    genBar.style.width = "0%";
+
+    const body = { formats: formats };
+    if (genRun.value) body.run_id = parseInt(genRun.value, 10);
+
+    try {
+      const d = await window.taptuna.api("POST",
+        "/api/projects/{{ project_name }}/reports", body);
+      const jobId = d.job_id;
+      window.taptuna.subscribeJob(jobId, "report");
+      const es = new EventSource("/api/jobs/" + jobId + "/events");
+      es.addEventListener("progress", (e) => {
+        const x = JSON.parse(e.data);
+        genMsg.textContent = x.message || "…";
+        genBar.style.width = Math.round((x.fraction || 0) * 100) + "%";
+      });
+      es.addEventListener("done", () => {
+        es.close();
+        window.taptuna.toast("Отчёт готов", "ok");
+        setTimeout(() => window.location.reload(), 700);
+      });
+      es.addEventListener("error", () => es.close());
+    } catch (e) {
+      genMsg.textContent = "ошибка: " + e.message;
+    }
+  });
+})();
+</script>
+{% endblock %}

@@ -1,0 +1,179 @@
+{% extends "base.html" %}
+{% block title %}Главная{% endblock %}
+{% block content %}
+
+<h1>Проект: {{ project_name }}</h1>
+
+{% if not initialized %}
+<div class="card">
+  <p class="muted">Проект не инициализирован. Создайте его через CLI:</p>
+  <pre class="mono">taptuna init --project {{ project_name }}</pre>
+</div>
+{% else %}
+
+<section class="card">
+  <h2>Импорт PCAP/PCAPNG</h2>
+  <div id="dropzone" class="dropzone">
+    <p>Перетащите <strong>.pcap</strong> / <strong>.pcapng</strong> сюда</p>
+    <p class="muted small">или</p>
+    <label class="btn primary">
+      Выбрать файл
+      <input type="file" id="file-input" accept=".pcap,.pcapng" hidden>
+    </label>
+  </div>
+  <div id="ingest-progress" hidden>
+    <p class="small muted" id="ingest-msg">…</p>
+    <div class="progress"><div id="ingest-bar" style="width:0%"></div></div>
+  </div>
+</section>
+
+<section class="card">
+  <h2>Captures ({{ captures|length }})</h2>
+  {% if captures %}
+  <table>
+    <thead>
+      <tr>
+        <th>ID</th><th>Файл</th><th>SHA256</th>
+        <th>Пакетов</th><th>tshark</th><th>Импортирован</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for c in captures %}
+      <tr>
+        <td>{{ c.id }}</td>
+        <td>{{ c.filename }}</td>
+        <td class="mono small">{{ c.sha256[:16] }}…</td>
+        <td>{{ c.packet_count }}</td>
+        <td class="small">{{ c.tshark_version }}</td>
+        <td class="small">{{ c.ingested_at }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">Ещё нет импортированных файлов.</p>
+  {% endif %}
+</section>
+
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  const dz = document.getElementById("dropzone");
+  const fi = document.getElementById("file-input");
+  const prog = document.getElementById("ingest-progress");
+  const msg = document.getElementById("ingest-msg");
+  const bar = document.getElementById("ingest-bar");
+  if (!dz) return;
+
+  function setProgress(m, f) {
+    msg.textContent = m;
+    bar.style.width = Math.round(f * 100) + "%";
+  }
+
+  function resetProgress() {
+    setTimeout(() => { prog.hidden = true; }, 3000);
+  }
+
+  async function upload(file) {
+    // Клиентская проверка
+    const lower = file.name.toLowerCase();
+    if (!lower.endsWith(".pcap") && !lower.endsWith(".pcapng") && !lower.endsWith(".cap")) {
+      window.taptuna.toast("Ожидается .pcap / .pcapng / .cap", "err");
+      return;
+    }
+    if (file.size === 0) {
+      window.taptuna.toast("Файл пустой", "err");
+      return;
+    }
+
+    prog.hidden = false;
+    setProgress("Загрузка на сервер: " + file.name +
+                " (" + window.taptuna.formatBytes(file.size) + ")", 0.02);
+
+    const fd = new FormData();
+    fd.append("file", file);
+
+    let resp;
+    try {
+      resp = await fetch("/api/projects/{{ project_name }}/upload", {
+        method: "POST",
+        body: fd,
+      });
+    } catch (e) {
+      setProgress("Сеть: " + e.message, 0);
+      window.taptuna.toast("Ошибка сети: " + e.message, "err");
+      resetProgress();
+      return;
+    }
+
+    let data = null;
+    try { data = await resp.json(); } catch (_) { data = null; }
+    if (!resp.ok) {
+      const m = (data && data.error && data.error.message) || ("HTTP " + resp.status);
+      setProgress("Ошибка: " + m, 0);
+      window.taptuna.toast(m, "err");
+      resetProgress();
+      return;
+    }
+
+    // Запущен job
+    setProgress("Ingest запущен (job " + data.job_id + ")...", 0.05);
+    window.taptuna.subscribeJob(data.job_id, "ingest");
+
+    // Прогресс job'а приходит через SSE-панель, но мы дублируем его
+    // в локальной полосе, чтобы пользователь видел прогресс прямо здесь.
+    const es = new EventSource("/api/jobs/" + data.job_id + "/events");
+    es.addEventListener("progress", (e) => {
+      const d = JSON.parse(e.data);
+      // SSE-панель уже показывает; здесь просто двигаем локальную полосу.
+      setProgress(d.message || "…", d.fraction != null ? d.fraction : 0);
+    });
+    es.addEventListener("result", (e) => {
+      try {
+        const d = JSON.parse(e.data);
+        const r = d.result || {};
+        setProgress(
+          "Готово: " + (r.sessions || 0) + " сессий, " +
+          (r.packets || 0) + " пакетов",
+          1.0
+        );
+      } catch (_) { setProgress("Готово", 1.0); }
+    });
+    es.addEventListener("done", () => {
+      es.close();
+      window.taptuna.toast("Ingest завершён", "ok");
+      setTimeout(() => window.location.reload(), 800);
+    });
+    es.addEventListener("error", (e) => {
+      try {
+        const d = JSON.parse(e.data);
+        const m = (d.error && d.error.message) || "ошибка job'а";
+        setProgress("Ошибка: " + m, 0);
+        window.taptuna.toast(m, "err");
+      } catch (_) {}
+      es.close();
+      resetProgress();
+    });
+    es.addEventListener("close", () => es.close());
+    es.onerror = () => es.close();
+  }
+
+  dz.addEventListener("dragover", (e) => {
+    e.preventDefault();
+    dz.classList.add("dragover");
+  });
+  dz.addEventListener("dragleave", () => dz.classList.remove("dragover"));
+  dz.addEventListener("drop", (e) => {
+    e.preventDefault();
+    dz.classList.remove("dragover");
+    if (e.dataTransfer.files.length) upload(e.dataTransfer.files[0]);
+  });
+  fi.addEventListener("change", () => {
+    if (fi.files.length) upload(fi.files[0]);
+  });
+})();
+</script>
+{% endblock %}

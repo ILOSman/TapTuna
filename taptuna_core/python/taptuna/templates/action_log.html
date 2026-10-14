@@ -1,0 +1,137 @@
+{% extends "base.html" %}
+{% block title %}Журнал действий{% endblock %}
+{% block content %}
+
+<h1>Журнал действий</h1>
+
+<section class="card">
+  <h2>Импорт</h2>
+  <div class="row">
+    <input type="text" id="log-name" placeholder="имя (иначе stem файла)" style="width:220px">
+    <input type="text" id="log-path" placeholder="/путь/к/actions.csv или .yaml" style="flex:1">
+    <label class="row small">
+      <input type="checkbox" id="log-no-copy"> Не копировать в проект
+    </label>
+    <button id="log-add" class="primary">Импортировать</button>
+  </div>
+  <p class="muted small">
+    CSV: колонки <code>ts, action, params_json, result_json</code>.<br>
+    YAML: список <code>{ts, action, params, result}</code> или <code>{entries: [...]}</code>.
+  </p>
+</section>
+
+<section class="card">
+  <h2>Импортированные журналы ({{ logs|length }})</h2>
+  {% if logs %}
+  <table>
+    <thead>
+      <tr><th>ID</th><th>Имя</th><th>Записей</th>
+          <th>SHA256</th><th>Импортирован</th><th></th></tr>
+    </thead>
+    <tbody>
+      {% for lg in logs %}
+      <tr>
+        <td>{{ lg.id }}</td>
+        <td><strong>{{ lg.name }}</strong></td>
+        <td>{{ lg.row_count }}</td>
+        <td class="mono small">{{ lg.sha256[:16] }}…</td>
+        <td class="small">{{ lg.imported_at }}</td>
+        <td>
+          <button class="entries-btn" data-log="{{ lg.id }}">Записи</button>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">Журналов нет.</p>
+  {% endif %}
+</section>
+
+<section class="card" id="entries-card" hidden>
+  <h2>Записи журнала #<span id="entries-log-id"></span></h2>
+  <div class="row" style="margin-bottom:0.5rem">
+    <input type="text" id="entries-filter" placeholder="Поиск по action / params" style="width:250px">
+    <span id="entries-count" class="muted small"></span>
+  </div>
+  <div id="entries-table">—</div>
+</section>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  const logName = document.getElementById("log-name");
+  const logPath = document.getElementById("log-path");
+  const logNoCopy = document.getElementById("log-no-copy");
+  const logAdd = document.getElementById("log-add");
+  const entriesCard = document.getElementById("entries-card");
+  const entriesLogId = document.getElementById("entries-log-id");
+  const entriesFilter = document.getElementById("entries-filter");
+  const entriesCount = document.getElementById("entries-count");
+  const entriesTable = document.getElementById("entries-table");
+
+  const dataByLog = {{ entries | tojson }};
+
+  logAdd.addEventListener("click", async () => {
+    const path = logPath.value.trim();
+    if (!path) { window.taptuna.toast("Укажите путь", "err"); return; }
+    try {
+      const d = await window.taptuna.api("POST",
+        "/api/projects/{{ project_name }}/action_log",
+        {
+          path: path,
+          name: logName.value.trim() || null,
+          no_copy: logNoCopy.checked,
+        });
+      window.taptuna.toast("Импортировано: " + d.entries + " записей", "ok");
+      setTimeout(() => window.location.reload(), 500);
+    } catch (e) {
+      window.taptuna.toast(e.message, "err");
+    }
+  });
+
+  let currentEntries = [];
+  document.querySelectorAll(".entries-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const id = btn.dataset.log;
+      currentEntries = dataByLog[id] || [];
+      entriesLogId.textContent = id;
+      entriesCard.hidden = false;
+      entriesCard.scrollIntoView({behavior: "smooth"});
+      renderEntries();
+    });
+  });
+
+  function renderEntries() {
+    const q = (entriesFilter.value || "").toLowerCase();
+    const filtered = currentEntries.filter((e) => {
+      if (!q) return true;
+      return JSON.stringify(e).toLowerCase().includes(q);
+    });
+    entriesCount.textContent = filtered.length + " / " + currentEntries.length;
+    if (!filtered.length) {
+      entriesTable.innerHTML = '<p class="muted">Нет записей.</p>';
+      return;
+    }
+    let html = '<table><thead><tr>' +
+      '<th>ts</th><th>Action</th><th>Params</th><th>Result</th>' +
+      '</tr></thead><tbody>';
+    for (const e of filtered) {
+      const ts = window.taptuna.formatTime(e.ts);
+      html += '<tr>' +
+        '<td class="mono small">' + ts + '</td>' +
+        '<td><strong>' + window.taptuna.escapeHtml(e.action) + '</strong></td>' +
+        '<td class="mono small">' + window.taptuna.escapeHtml(JSON.stringify(e.params || {})) + '</td>' +
+        '<td class="mono small">' + window.taptuna.escapeHtml(JSON.stringify(e.result || {})) + '</td>' +
+        '</tr>';
+    }
+    html += '</tbody></table>';
+    entriesTable.innerHTML = html;
+  }
+
+  entriesFilter.addEventListener("input", renderEntries);
+})();
+</script>
+{% endblock %}

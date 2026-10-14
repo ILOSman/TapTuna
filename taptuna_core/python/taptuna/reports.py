@@ -245,115 +245,138 @@ def _render_markdown(data: dict[str, Any], model: dict[str, Any]) -> str:
 
 
 def _render_markdown_fallback(data: dict[str, Any], model: dict[str, Any]) -> str:
-    """Запасной рендер без Jinja2."""
+    """Запасной рендер без Jinja2. Возвращает Markdown."""
     s = data["summary"]
     m = data["manifest"]
+    interp = data["interpretation"]
+    corpus = data["corpus"]
+    run = data["run"]
 
-    lines: list[str] = []
-    lines.append(f"# Отчёт о верификации протокола\n")
-    lines.append(f"**Интерпретация:** `{data['interpretation']['name']}@v{data['interpretation']['version']}`  ")
-    lines.append(f"**Прогон:** #{data['run']['id']}, вердикт: **{s.get('verdict', 'unknown')}**  ")
-    lines.append(f"**Run hash:** `{s.get('run_hash', '—')}`  ")
-    lines.append(f"**Дата:** {time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime())}\n")
+    L: list[str] = []
+
+    # Заголовок
+    L.append("# Отчёт о верификации протокола\n")
+    L.append(f"| | |")
+    L.append(f"|---|---|")
+    L.append(f"| Интерпретация | `{interp['name']}@v{interp['version']}` |")
+    L.append(f"| Прогон | #{run['id']} |")
+    L.append(f"| Вердикт | **{s.get('verdict', 'unknown')}** |")
+    L.append(f"| Run hash | `{s.get('run_hash', '—')}` |")
+    L.append(f"| Дата | {time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime())} |\n")
 
     # 1. Цели и границы
-    lines.append("## 1. Цели и границы\n")
-    lines.append(f"Цель: верификация гипотез о структуре протокола на корпусе "
-                 f"`{data['corpus']['name']}`.\n")
-    lines.append("Границы: анализ ограничен TCP-потоками и framing/fields "
-                 "в рамках выбранной интерпретации.\n")
+    L.append("## 1. Цели и границы\n")
+    L.append(f"Цель — верификация гипотез о структуре протокола на корпусе "
+             f"`{corpus['name']}`.\n")
+    L.append("Границы: анализ ограничен TCP-потоками и применением framing/"
+             "fields в рамках выбранной интерпретации.\n")
 
     # 2. Метод
-    lines.append("## 2. Метод\n")
-    lines.append(f"- **Версия tshark:** `{m.get('tshark_version', 'unknown')}`")
-    lines.append(f"- **Python:** `{m.get('python_version', 'unknown')}`")
-    lines.append(f"- **Платформа:** `{m.get('platform', 'unknown')}`")
+    L.append("## 2. Метод\n")
+    L.append(f"- **Версия tshark:** `{m.get('tshark_version', 'unknown')}`")
+    L.append(f"- **Python:** `{m.get('python_version', 'unknown')}`")
+    L.append(f"- **Платформа:** `{m.get('platform', 'unknown')}`")
     policies = m.get("policies", {})
-    lines.append(f"- **Overlap policy:** `{policies.get('overlap', 'unknown')}`")
-    lines.append(f"- **Checksum policy:** `{policies.get('checksum', 'unknown')}`\n")
-    lines.append("Команда ingest:\n")
-    lines.append("```")
-    lines.append("tshark -r <file> -T fields -E separator=\\t -E occurrence=f \\")
-    for f in ["tcp.stream", "frame.number", "frame.time_epoch", "ip.src", "ip.dst",
-              "tcp.srcport", "tcp.dstport", "tcp.seq", "tcp.ack", "tcp.len",
-              "tcp.flags.syn", "tcp.flags.ack", "tcp.flags.fin", "tcp.flags.reset",
-              "tcp.payload"]:
-        lines.append(f"  -e {f} \\")
-    lines.append("```\n")
+    L.append(f"- **Overlap policy:** `{policies.get('overlap', 'unknown')}`")
+    L.append(f"- **Checksum policy:** `{policies.get('checksum', 'unknown')}`\n")
+    L.append("Команда ingest (один вызов на файл, поля — §6.2):\n")
+    L.append("```bash")
+    L.append("tshark -r <file> -T fields \\")
+    L.append("  -E separator=$'\\t' -E occurrence=f \\")
+    fields = [
+        "tcp.stream", "frame.number", "frame.time_epoch",
+        "ip.src", "ip.dst", "tcp.srcport", "tcp.dstport",
+        "tcp.seq", "tcp.ack", "tcp.len",
+        "tcp.flags.syn", "tcp.flags.ack", "tcp.flags.fin", "tcp.flags.reset",
+        "tcp.payload",
+    ]
+    for f_ in fields:
+        L.append(f"  -e {f_} \\")
+    L.append("```\n")
 
     # 3. Корпус
-    lines.append("## 3. Корпус\n")
-    lines.append(f"Название: `{data['corpus']['name']}`\n")
-    lines.append(f"Критерии: `{data['corpus']['criteria_json']}`\n")
-    lines.append("Записи:\n")
+    L.append("## 3. Корпус\n")
+    L.append(f"- **Название:** `{corpus['name']}`")
+    L.append(f"- **Критерии:** `{corpus['criteria_json']}`\n")
+    L.append("Записи:\n")
     for c in data["captures"]:
-        lines.append(f"- `{c['sha256'][:16]}…` — {c['filename']} "
-                     f"({c['packet_count']} пакетов)\n")
+        L.append(f"- `{c['sha256'][:16]}…` — `{c['filename']}` "
+                 f"({c['packet_count']} пакетов)")
+    L.append("")
 
     # 4. Проверенные примеры
-    lines.append("## 4. Проверенные примеры\n")
+    L.append("## 4. Проверенные примеры\n")
     if data["verified_examples"]:
         for ex in data["verified_examples"][:10]:
-            lines.append(f"- Сообщение #{ex['message_index']} "
-                         f"@ offset {ex['stream_offset']}, длина {ex['length']}: "
-                         f"`{ex['message_name']}`\n")
+            L.append(f"- Сообщение #{ex['message_index']} @ offset "
+                     f"`{ex['stream_offset']}`, длина `{ex['length']}`: "
+                     f"`{ex['message_name']}`")
+        L.append("")
     else:
-        lines.append("_Нет проверенных примеров._\n")
+        L.append("_Нет проверенных примеров._\n")
 
     # 5. Контрпримеры
-    lines.append("## 5. Контрпримеры\n")
+    L.append("## 5. Контрпримеры\n")
     if data["counterexamples"]:
         for ex in data["counterexamples"][:10]:
-            lines.append(f"- **{ex['status']}** Сообщение #{ex['message_index']} "
-                         f"@ offset {ex['stream_offset']}: {ex['message_name']}\n")
+            L.append(f"- **{ex['status']}** — сообщение #{ex['message_index']} "
+                     f"@ offset `{ex['stream_offset']}`, "
+                     f"`{ex['message_name']}`")
+        L.append("")
     else:
-        lines.append("_Контрпримеры не обнаружены._\n")
+        L.append("_Контрпримеры не обнаружены._\n")
 
     # 6. Неизвестные участки
-    lines.append("## 6. Неизвестные участки\n")
+    L.append("## 6. Неизвестные участки\n")
     if data["unknown_areas"]:
         for ex in data["unknown_areas"][:10]:
-            lines.append(f"- {ex['status']} @ offset {ex['stream_offset']}, "
-                         f"длина {ex['length']}\n")
+            L.append(f"- {ex['status']} @ offset `{ex['stream_offset']}`, "
+                     f"длина `{ex['length']}`")
+        L.append("")
     else:
-        lines.append("_Неизвестные участки отсутствуют._\n")
+        L.append("_Неизвестные участки отсутствуют._\n")
 
     # 7. Область применимости
-    lines.append("## 7. Область применимости\n")
-    lines.append(f"Модель применима к TCP-потокам, соответствующим критериям "
-                 f"корпуса `{data['corpus']['name']}`. "
-                 f"Перенос на другие протоколы и порты требует переобучения/перепроверки.\n")
+    L.append("## 7. Область применимости\n")
+    L.append(f"Модель применима к TCP-потокам, соответствующим критериям "
+             f"корпуса `{corpus['name']}`. Перенос на другие протоколы и "
+             f"порты требует переобучения и перепроверки.\n")
 
     # 8. Открытые вопросы
-    lines.append("## 8. Открытые вопросы\n")
-    lines.append(f"- Полнота покрытия: {len(data['unknown_areas'])} участков остались неизвестными")
-    lines.append(f"- Контрпримеры: {len(data['counterexamples'])} сообщений нарушили правила")
-    lines.append(f"- Проверенные примеры: {len(data['verified_examples'])} успешно разобраны\n")
+    L.append("## 8. Открытые вопросы\n")
+    L.append(f"- Полнота покрытия: {len(data['unknown_areas'])} участков "
+             f"остались неизвестными")
+    L.append(f"- Контрпримеры: {len(data['counterexamples'])} сообщений "
+             f"нарушили правила")
+    L.append(f"- Проверенные примеры: {len(data['verified_examples'])} "
+             f"успешно разобраны\n")
 
     # 9. Гипотезы (отдельно от правил)
-    lines.append("## 9. Гипотезы (отдельно от правил)\n")
+    L.append("## 9. Гипотезы (отдельно от правил)\n")
     if data["hypotheses"]:
         for h in data["hypotheses"]:
-            lines.append(f"- [{h['status']}] {h['formulation']}\n")
+            L.append(f"- [{h['status']}] {h['formulation']}")
+        L.append("")
     else:
-        lines.append("_Гипотезы не зафиксированы._\n")
+        L.append("_Гипотезы не зафиксированы._\n")
 
-    # 10. Предупреждение о checksum offloading
-    lines.append("## 10. Предупреждение о checksum offloading\n")
-    lines.append("Checksum-поля IP/TCP могут быть некорректны в захватах, "
-                 "сделанных на интерфейсе отправки (checksum offloading). "
-                 "Все выводы о checksum следует проверять на захватах с "
-                 "интерфейса приёма.\n")
+    # 10. Checksum offloading
+    L.append("## 10. Предупреждение о checksum offloading\n")
+    L.append("Checksum-поля IP/TCP могут быть некорректны в захватах, "
+             "сделанных на интерфейсе отправки (checksum offloading). "
+             "Все выводы о checksum следует проверять на захватах с "
+             "интерфейса приёма.\n")
 
     # Сводка
-    lines.append("## Сводка результатов\n")
-    lines.append("| Статус | Количество |")
-    lines.append("|---|---|")
-    for k in ("ok", "violation", "ambiguous", "incomplete", "not_applicable", "unknown_frame"):
-        lines.append(f"| {k} | {data['status_counts'].get(k, 0)} |")
-    lines.append("")
+    L.append("## Сводка результатов\n")
+    L.append("| Статус | Количество |")
+    L.append("|---|---|")
+    for k in ("ok", "violation", "ambiguous", "incomplete",
+              "not_applicable", "unknown_frame"):
+        L.append(f"| `{k}` | {data['status_counts'].get(k, 0)} |")
+    L.append("")
 
-    return "\n".join(lines)
+    return "\n".join(L)
 
 
 # ---------------------------------------------------------------------------

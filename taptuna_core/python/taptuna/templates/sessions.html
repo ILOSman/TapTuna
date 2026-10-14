@@ -1,0 +1,117 @@
+{% extends "base.html" %}
+{% block title %}Сессии{% endblock %}
+{% block content %}
+
+<h1>Сессии ({{ sessions|length }})</h1>
+
+<div class="row" style="margin-bottom:0.8rem">
+  <input type="text" id="filter-text" placeholder="Поиск по IP, порту..." style="width:250px">
+  <select id="filter-capture">
+    <option value="">Все captures</option>
+    {% for c in captures %}
+    <option value="{{ c.id }}">{{ c.filename }}</option>
+    {% endfor %}
+  </select>
+  <label class="row small">
+    <input type="checkbox" id="filter-syn"> Только с SYN
+  </label>
+  <span class="spacer"></span>
+  <span class="muted small" id="sessions-count">{{ sessions|length }}</span>
+</div>
+
+<table id="sessions-table">
+  <thead>
+    <tr>
+      <th data-sort="id">ID</th>
+      <th data-sort="ip_src">Источник</th>
+      <th data-sort="ip_dst">Назначение</th>
+      <th>Stream</th>
+      <th data-sort="packets_a2b">Пакеты (→/←)</th>
+      <th data-sort="bytes_a2b">Байты (→/←)</th>
+      <th>SYN</th>
+      <th data-sort="start_time">Начало</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for s in sessions %}
+    <tr data-id="{{ s.id }}"
+        data-capture="{{ s.capture_id }}"
+        data-src="{{ s.ip_src }}:{{ s.port_src }}"
+        data-dst="{{ s.ip_dst }}:{{ s.port_dst }}"
+        data-syn="{{ 1 if s.roles_established else 0 }}">
+      <td><a href="{{ url_for('ui.session_detail', session_id=s.id) }}">{{ s.id }}</a></td>
+      <td class="mono">{{ s.ip_src }}:{{ s.port_src }}</td>
+      <td class="mono">{{ s.ip_dst }}:{{ s.port_dst }}</td>
+      <td>{{ s.stream_index }}</td>
+      <td>{{ s.packets_a2b }} / {{ s.packets_b2a }}</td>
+      <td>{{ s.bytes_a2b }} / {{ s.bytes_b2a }}</td>
+      <td>{% if s.roles_established %}<span class="status ok">да</span>{% else %}<span class="muted">—</span>{% endif %}</td>
+      <td class="small">{{ "%.3f"|format(s.start_time) }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+{% if not sessions %}
+<p class="muted">Сессий нет. Импортируйте PCAP на <a href="{{ url_for('ui.index') }}">главной</a>.</p>
+{% endif %}
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  const table = document.getElementById("sessions-table");
+  if (!table) return;
+  const rows = Array.from(table.tBodies[0].rows);
+  const filterText = document.getElementById("filter-text");
+  const filterCapture = document.getElementById("filter-capture");
+  const filterSyn = document.getElementById("filter-syn");
+  const countEl = document.getElementById("sessions-count");
+
+  function applyFilters() {
+    const q = (filterText.value || "").toLowerCase();
+    const cap = filterCapture.value;
+    const synOnly = filterSyn.checked;
+    let visible = 0;
+    for (const tr of rows) {
+      const src = (tr.dataset.src || "").toLowerCase();
+      const dst = (tr.dataset.dst || "").toLowerCase();
+      const okText = !q || src.includes(q) || dst.includes(q);
+      const okCap = !cap || tr.dataset.capture === cap;
+      const okSyn = !synOnly || tr.dataset.syn === "1";
+      const ok = okText && okCap && okSyn;
+      tr.hidden = !ok;
+      if (ok) visible++;
+    }
+    countEl.textContent = visible + " / " + rows.length;
+  }
+
+  filterText.addEventListener("input", applyFilters);
+  filterCapture.addEventListener("change", applyFilters);
+  filterSyn.addEventListener("change", applyFilters);
+
+  // Сортировка по столбцам
+  let sortCol = null, sortAsc = true;
+  table.querySelectorAll("th[data-sort]").forEach((th) => {
+    th.style.cursor = "pointer";
+    th.addEventListener("click", () => {
+      const col = th.dataset.sort;
+      if (sortCol === col) sortAsc = !sortAsc; else { sortCol = col; sortAsc = true; }
+      const idx = Array.from(th.parentNode.children).indexOf(th);
+      rows.sort((a, b) => {
+        const av = a.cells[idx].textContent.trim();
+        const bv = b.cells[idx].textContent.trim();
+        const na = parseFloat(av), nb = parseFloat(bv);
+        let cmp;
+        if (!isNaN(na) && !isNaN(nb)) cmp = na - nb;
+        else cmp = av.localeCompare(bv);
+        return sortAsc ? cmp : -cmp;
+      });
+      const tb = table.tBodies[0];
+      for (const r of rows) tb.appendChild(r);
+    });
+  });
+})();
+</script>
+{% endblock %}

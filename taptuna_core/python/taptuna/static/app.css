@@ -1,0 +1,198 @@
+:root {
+  --bg: #ffffff;
+  --fg: #1a1a1a;
+  --muted: #6a6a6a;
+  --line: #d8d8d8;
+  --accent: #2b6cb0;
+  --accent-fg: #ffffff;
+  --ok: #2f855a;
+  --warn: #b7791f;
+  --err: #c53030;
+  --info: #3182ce;
+  --bg-alt: #f7f7f8;
+  --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: -apple-system, system-ui, "Segoe UI", Roboto, sans-serif;
+  font-size: 14px;
+  color: var(--fg);
+  background: var(--bg);
+}
+
+/* Topbar */
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.5rem 1rem;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-alt);
+  position: sticky; top: 0; z-index: 100;
+}
+.topbar .brand { font-weight: 600; }
+.topbar .brand a { color: var(--fg); text-decoration: none; }
+.topbar .project-name {
+  margin-left: 0.5rem; color: var(--muted); font-weight: 400;
+}
+.topbar nav a {
+  color: var(--fg); text-decoration: none;
+  padding: 0.35rem 0.7rem; border-radius: 4px;
+}
+.topbar nav a:hover { background: #e8e8ea; }
+
+main { padding: 1rem; max-width: 1400px; margin: 0 auto; }
+
+/* Generic */
+h1 { font-size: 1.4rem; margin: 0 0 0.8rem 0; }
+h2 { font-size: 1.1rem; margin: 1rem 0 0.5rem 0; }
+a { color: var(--accent); }
+button, .btn {
+  font: inherit;
+  padding: 0.4rem 0.8rem;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  border-radius: 4px;
+  cursor: pointer;
+}
+button:hover, .btn:hover { background: var(--bg-alt); }
+button.primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+button.primary:hover { background: #1e4f85; }
+button.danger { color: var(--err); }
+input, select, textarea {
+  font: inherit;
+  padding: 0.35rem 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+}
+
+table {
+  border-collapse: collapse; width: 100%;
+  background: var(--bg);
+}
+table th, table td {
+  text-align: left;
+  padding: 0.4rem 0.6rem;
+  border-bottom: 1px solid var(--line);
+}
+table th { background: var(--bg-alt); position: sticky; top: 0; z-index: 2; }
+table tr:hover td { background: #fbfbfd; }
+
+.mono { font-family: var(--mono); }
+.muted { color: var(--muted); }
+.small { font-size: 0.85rem; }
+
+.row { display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; }
+.spacer { flex: 1; }
+.card {
+  border: 1px solid var(--line); border-radius: 6px;
+  padding: 1rem; margin-bottom: 1rem; background: var(--bg);
+}
+
+/* Statuses */
+.status { display: inline-block; padding: 0.05rem 0.45rem; border-radius: 3px;
+          font-size: 0.8rem; font-weight: 500; }
+.status.ok { background: #e6f4ea; color: var(--ok); }
+.status.violation { background: #fdecea; color: var(--err); }
+.status.ambiguous { background: #fef3c7; color: var(--warn); }
+.status.incomplete { background: #e0e7ff; color: var(--info); }
+.status.not_applicable { background: #f0f0f0; color: var(--muted); }
+.status.unknown_frame { background: #f0f0f0; color: var(--muted); }
+.status.clean { background: #e6f4ea; color: var(--ok); }
+.status.overlap { background: #fef3c7; color: var(--warn); }
+.status.gap_before { background: #e0e7ff; color: var(--info); }
+
+/* Hex viewer */
+.hex {
+  font-family: var(--mono); font-size: 12px;
+  background: #fbfbfd; padding: 0.5rem; border-radius: 4px;
+  white-space: pre; overflow-x: auto;
+  max-height: 500px; overflow-y: auto;
+  line-height: 1.35;
+}
+.hex .off { color: var(--muted); user-select: none; }
+.hex .byte { padding: 0 1px; }
+.hex .byte.gap { background: #ffe6e6; }
+.hex .byte.amb { background: #fff3c7; }
+.hex .ascii { color: var(--muted); }
+
+/* SSE jobs panel */
+#jobs-panel {
+  position: fixed; bottom: 1rem; right: 1rem;
+  width: 380px; max-height: 50vh;
+  background: var(--bg); border: 1px solid var(--line);
+  border-radius: 6px; box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+  display: flex; flex-direction: column;
+  z-index: 200;
+}
+#jobs-panel header {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 0.5rem 0.8rem; border-bottom: 1px solid var(--line);
+}
+#jobs-panel #jobs-close {
+  background: none; border: none; font-size: 1.2rem; cursor: pointer;
+  padding: 0 0.3rem;
+}
+#jobs-list { padding: 0.5rem 0.8rem; overflow-y: auto; }
+.job-item {
+  border-bottom: 1px solid var(--line); padding: 0.4rem 0;
+}
+.job-item:last-child { border-bottom: none; }
+.job-item .bar {
+  height: 4px; background: #e8e8ea; border-radius: 2px; overflow: hidden;
+  margin-top: 0.3rem;
+}
+.job-item .bar > div { height: 100%; background: var(--accent); transition: width 0.2s; }
+.job-item .job-head { display: flex; justify-content: space-between; gap: 0.5rem; }
+.job-item .job-kind { font-weight: 500; }
+.job-item .job-state { font-size: 0.85rem; color: var(--muted); }
+.job-item .job-msg { font-size: 0.85rem; color: var(--muted); margin-top: 0.2rem; }
+
+/* Toast */
+#toast-root {
+  position: fixed; top: 1rem; left: 50%; transform: translateX(-50%);
+  z-index: 300;
+  display: flex; flex-direction: column; gap: 0.5rem;
+}
+.toast {
+  background: #333; color: #fff; padding: 0.5rem 1rem;
+  border-radius: 4px; font-size: 0.9rem;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+  animation: toast-in 0.15s ease-out;
+}
+.toast.err { background: var(--err); }
+.toast.ok { background: var(--ok); }
+@keyframes toast-in { from { opacity: 0; transform: translateY(-5px); } to { opacity: 1; } }
+
+/* Progress bar inline */
+.progress {
+  height: 6px; background: #e8e8ea; border-radius: 3px; overflow: hidden;
+}
+.progress > div { height: 100%; background: var(--accent); transition: width 0.2s; }
+
+/* Virtual scroll */
+.vscroll {
+  position: relative; overflow-y: auto; border: 1px solid var(--line); border-radius: 4px;
+}
+.vscroll-inner { position: relative; }
+.vscroll-item {
+  position: absolute; left: 0; right: 0; padding: 0.3rem 0.6rem;
+  border-bottom: 1px solid var(--line); font-family: var(--mono); font-size: 12px;
+}
+.dropzone {
+  border: 2px dashed var(--line);
+  border-radius: 8px;
+  padding: 2rem;
+  text-align: center;
+  transition: border-color 0.15s, background 0.15s;
+}
+.dropzone.dragover {
+  border-color: var(--accent);
+  background: #f0f6fb;
+}
+.dropzone p { margin: 0.4rem 0; }
+
+.hex .byte.hit { background: #b3e5fc; outline: 1px solid #0288d1; }

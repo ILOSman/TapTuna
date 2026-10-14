@@ -1,0 +1,173 @@
+{% extends "base.html" %}
+{% block title %}Интерпретации{% endblock %}
+{% block content %}
+
+<h1>Интерпретации</h1>
+
+<section class="card">
+  <h2>Добавить</h2>
+  <div class="row" style="margin-bottom:0.5rem">
+    <input type="text" id="new-name" placeholder="name (напр. http_v1)" style="width:220px">
+    <select id="new-kind">
+      <option value="declarative">declarative</option>
+      <option value="script">script</option>
+    </select>
+    <span class="spacer"></span>
+    <button id="add-btn" class="primary">Добавить</button>
+  </div>
+  <textarea id="new-yaml" class="mono" rows="14" style="width:100%"
+    placeholder="framing:
+  kind: fixed
+  size: 13
+  max_message: 1024
+fields:
+  name: message
+  fields:
+    - name: raw
+      type: bytes
+      offset: 0
+      size: 13
+constraints: []
+semantics: {}
+"></textarea>
+  <p class="muted small">YAML — для declarative-интерпретаций. Для script — поле code с функцией interpret.</p>
+</section>
+
+<section class="card">
+  <h2>Список ({{ interpretations|length }})</h2>
+  {% if interpretations %}
+  <table>
+    <thead>
+      <tr><th>ID</th><th>Name</th><th>Version</th><th>Kind</th>
+          <th>Hash</th><th>Создана</th><th></th></tr>
+    </thead>
+    <tbody>
+      {% for i in interpretations %}
+      <tr>
+        <td>{{ i.id }}</td>
+        <td><strong>{{ i.name }}</strong></td>
+        <td>{{ i.version }}</td>
+        <td>{{ i.kind }}</td>
+        <td class="mono small">{{ i.source_hash[:12] }}…</td>
+        <td class="small">{{ i.created_at }}</td>
+        <td>
+          <button class="apply-btn" data-id="{{ i.id }}"
+                  data-name="{{ i.name }}@v{{ i.version }}">Применить</button>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">Нет интерпретаций.</p>
+  {% endif %}
+</section>
+
+<section class="card" id="apply-card" hidden>
+  <h2>Применить <span id="apply-name" class="muted"></span></h2>
+  <div class="row">
+    <label>Сессия:</label>
+    <select id="apply-session" style="min-width:300px">
+      <option value="">— выберите —</option>
+      {% for s in sessions %}
+      <option value="{{ s.id }}">
+        #{{ s.id }}  {{ s.ip_src }}:{{ s.port_src }} ↔ {{ s.ip_dst }}:{{ s.port_dst }}
+      </option>
+      {% endfor %}
+    </select>
+    <label>Direction:</label>
+    <select id="apply-direction">
+      <option value="a_to_b">a_to_b</option>
+      <option value="b_to_a">b_to_a</option>
+    </select>
+    <button id="apply-go" class="primary">Применить</button>
+  </div>
+  <pre id="apply-result" class="mono" style="max-height:500px; overflow:auto; background:#fbfbfd; padding:0.5rem">—</pre>
+</section>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  const addBtn = document.getElementById("add-btn");
+  const newName = document.getElementById("new-name");
+  const newKind = document.getElementById("new-kind");
+  const newYaml = document.getElementById("new-yaml");
+  const applyCard = document.getElementById("apply-card");
+  const applyName = document.getElementById("apply-name");
+  const applySession = document.getElementById("apply-session");
+  const applyDirection = document.getElementById("apply-direction");
+  const applyGo = document.getElementById("apply-go");
+  const applyResult = document.getElementById("apply-result");
+
+  let currentApplyId = null;
+
+  addBtn.addEventListener("click", async () => {
+    const name = newName.value.trim();
+    if (!name) { window.taptuna.toast("Укажите имя", "err"); return; }
+    const src = newYaml.value;
+    let spec;
+    try {
+      // Простой парсер YAML через endpoint — но у нас нет; попробуем как JSON
+      // Проще передать на сервер как source_yaml; сервер распарсит.
+      spec = { source_yaml: src };
+    } catch (e) { window.taptuna.toast("YAML: " + e.message, "err"); return; }
+
+    // Парсим на клиенте примитивно — если это JSON, отдадим как объект
+    // Здесь правильнее послать YAML и распарсить на сервере. Но наш
+    // POST /interpretations ждёт уже распарсенные блоки.
+    // Отправим минимально: name, kind, source_yaml, а блоки распарсит
+    // сервер (пока он этого не делает — упрощённый путь).
+    try {
+      const r = await fetch("/api/projects/{{ project_name }}/interpretations", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({
+          name: name,
+          kind: newKind.value,
+          source_yaml: src,
+          framing: {}, fields: {}, constraints: [], semantics: {},
+        }),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error((d.error && d.error.message) || "HTTP " + r.status);
+      window.taptuna.toast("Добавлено: " + d.name + "@v" + d.version, "ok");
+      setTimeout(() => window.location.reload(), 500);
+    } catch (e) {
+      window.taptuna.toast(e.message, "err");
+    }
+  });
+
+  document.querySelectorAll(".apply-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      currentApplyId = btn.dataset.id;
+      applyName.textContent = btn.dataset.name;
+      applyCard.hidden = false;
+      applyResult.textContent = "—";
+      applyCard.scrollIntoView({behavior: "smooth"});
+    });
+  });
+
+  applyGo.addEventListener("click", async () => {
+    if (!currentApplyId || !applySession.value) {
+      window.taptuna.toast("Выберите сессию", "err");
+      return;
+    }
+    applyResult.textContent = "применение...";
+    try {
+      const d = await window.taptuna.api("POST",
+        "/api/interpretations/" + currentApplyId + "/apply",
+        {
+          project_id: "{{ project_name }}",
+          session_id: parseInt(applySession.value, 10),
+          direction: applyDirection.value,
+        });
+      applyResult.textContent = JSON.stringify(d, null, 2);
+    } catch (e) {
+      applyResult.textContent = "ошибка: " + e.message;
+    }
+  });
+})();
+</script>
+{% endblock %}

@@ -1,0 +1,212 @@
+{% extends "base.html" %}
+{% block title %}Исследование{% endblock %}
+{% block content %}
+
+<h1>Исследование</h1>
+
+<section class="card">
+  <div class="row">
+    <label>Сессия:</label>
+    <select id="session-select" style="min-width:350px">
+      <option value="">— выберите —</option>
+      {% for s in sessions %}
+      <option value="{{ s.id }}">
+        #{{ s.id }}  {{ s.ip_src }}:{{ s.port_src }} ↔ {{ s.ip_dst }}:{{ s.port_dst }}
+        (stream {{ s.stream_index }})
+      </option>
+      {% endfor %}
+    </select>
+    <button id="load-btn" class="primary">Загрузить</button>
+  </div>
+</section>
+
+<section class="card" id="search-card" hidden>
+  <div class="row">
+    <label>Поиск:</label>
+    <input type="text" id="search-text" placeholder="hex: 48656c6c6f  |  regex: Hello.+" style="width:300px">
+    <label class="row small">
+      <input type="checkbox" id="search-regex"> Regex
+    </label>
+    <button id="search-btn">Найти</button>
+    <span id="search-info" class="muted small"></span>
+  </div>
+</section>
+
+<section class="row" id="streams-row" hidden style="gap:1rem; align-items:flex-start">
+  <div class="card" style="flex:1; min-width:0">
+    <div class="row">
+      <h2 style="margin:0">a_to_b</h2>
+      <span class="spacer"></span>
+      <span class="muted small" id="size-a">—</span>
+    </div>
+    <div class="hex" id="hex-a" style="max-height:600px">—</div>
+  </div>
+  <div class="card" style="flex:1; min-width:0">
+    <div class="row">
+      <h2 style="margin:0">b_to_a</h2>
+      <span class="spacer"></span>
+      <span class="muted small" id="size-b">—</span>
+    </div>
+    <div class="hex" id="hex-b" style="max-height:600px">—</div>
+  </div>
+</section>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  const sel = document.getElementById("session-select");
+  const loadBtn = document.getElementById("load-btn");
+  const searchCard = document.getElementById("search-card");
+  const searchText = document.getElementById("search-text");
+  const searchRegex = document.getElementById("search-regex");
+  const searchBtn = document.getElementById("search-btn");
+  const searchInfo = document.getElementById("search-info");
+  const streamsRow = document.getElementById("streams-row");
+  const hexA = document.getElementById("hex-a");
+  const hexB = document.getElementById("hex-b");
+  const sizeA = document.getElementById("size-a");
+  const sizeB = document.getElementById("size-b");
+
+  let current = null;  // {sessionId, dirs: {a_to_b: {...}, b_to_a: {...}}}
+
+  async function loadSession() {
+    const id = sel.value;
+    if (!id) return;
+    streamsRow.hidden = false;
+    searchCard.hidden = false;
+    hexA.textContent = "загрузка...";
+    hexB.textContent = "загрузка...";
+
+    const meta = await window.taptuna.api("GET",
+      "/api/sessions/" + id + "?project_id={{ project_name }}");
+    const dirs = {};
+    for (const d of (meta.directions || [])) {
+      dirs[d.direction] = d;
+    }
+    current = { sessionId: id, dirs };
+
+    for (const dir of ["a_to_b", "b_to_a"]) {
+      const d = dirs[dir];
+      const el = dir === "a_to_b" ? hexA : hexB;
+      const sizeEl = dir === "a_to_b" ? sizeA : sizeB;
+      if (!d) {
+        el.textContent = "(нет направления)";
+        sizeEl.textContent = "—";
+        continue;
+      }
+      sizeEl.textContent = d.reassembled_bytes + " байт";
+      const buf = await fetchBytes(id, dir, 0, Math.min(d.reassembled_bytes, 256 * 1024));
+      if (!buf || buf.length === 0) {
+        el.textContent = "(пусто)";
+        continue;
+      }
+      const marks = [];
+      for (const g of (d.gaps || [])) marks.push({start: g.offset, end: g.offset + g.length, kind: "gap"});
+      for (const a of (d.ambiguities || [])) marks.push({start: a.offset, end: a.offset + a.length, kind: "amb"});
+      window.taptuna.renderHex(el, buf, { marks });
+      el._bytes = buf;
+    }
+  }
+
+  async function fetchBytes(sessionId, dir, offset, length) {
+    const r = await fetch(
+      "/api/sessions/" + sessionId + "/stream/" + dir + "/bytes" +
+      "?project_id={{ project_name }}&offset=" + offset + "&length=" + length
+    );
+    if (!r.ok) return null;
+    return new Uint8Array(await r.arrayBuffer());
+  }
+
+  function parseSearch(query, isRegex) {
+    query = query.trim();
+    if (!query) return null;
+    if (isRegex) {
+      try { return { kind: "regex", value: new RegExp(query, "g") }; }
+      catch (e) { return { error: "regex: " + e.message }; }
+    }
+    // hex, если все символы hex и чётная длина
+    if (/^[0-9a-fA-F\s]+$/.test(query) && query.replace(/\s/g, "").length % 2 === 0) {
+      const bytes = [];
+      const clean = query.replace(/\s/g, "");
+      for (let i = 0; i < clean.length; i += 2) bytes.push(parseInt(clean.slice(i, i + 2), 16));
+      return { kind: "bytes", value: new Uint8Array(bytes) };
+    }
+    return { kind: "text", value: query };
+  }
+
+  function findBytes(haystack, needle) {
+    const hits = [];
+    outer: for (let i = 0; i <= haystack.length - needle.length; i++) {
+      for (let j = 0; j < needle.length; j++) {
+        if (haystack[i + j] !== needle[j]) continue outer;
+      }
+      hits.push(i);
+    }
+    return hits;
+  }
+
+  function applyHighlights(side, ranges) {
+    const el = side === "a" ? hexA : hexB;
+    const bytes = el._bytes;
+    if (!bytes) return;
+    const lines = el.querySelectorAll(".hex-line, pre");
+    // Упрощение: пройдёмся по всем byte-спанам и добавим .hit
+    el.querySelectorAll(".byte").forEach((sp) => sp.classList.remove("hit"));
+    const allBytes = el.querySelectorAll(".byte");
+    for (const [start, end] of ranges) {
+      for (let i = start; i < end && i < allBytes.length; i++) {
+        allBytes[i].classList.add("hit");
+      }
+    }
+  }
+
+  function search() {
+    if (!current) return;
+    const q = parseSearch(searchText.value, searchRegex.checked);
+    if (!q) { searchInfo.textContent = ""; return; }
+    if (q.error) { searchInfo.textContent = q.error; return; }
+
+    let totalHits = 0;
+    for (const dir of ["a_to_b", "b_to_a"]) {
+      const el = dir === "a_to_b" ? hexA : hexB;
+      const bytes = el._bytes;
+      if (!bytes) continue;
+      let ranges = [];
+      if (q.kind === "bytes") {
+        const hits = findBytes(bytes, q.value);
+        ranges = hits.map((h) => [h, h + q.value.length]);
+      } else if (q.kind === "regex") {
+        // В бинарном потоке применим regex через latin1-строку
+        let s = "";
+        for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+        let m;
+        const re = q.value;
+        while ((m = re.exec(s)) !== null) {
+          ranges.push([m.index, m.index + m[0].length]);
+          if (re.lastIndex === m.index) re.lastIndex++;
+        }
+      } else {
+        // text
+        const needle = q.value;
+        let s = "";
+        for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+        let idx = 0;
+        while ((idx = s.indexOf(needle, idx)) !== -1) {
+          ranges.push([idx, idx + needle.length]);
+          idx += 1;
+        }
+      }
+      applyHighlights(dir === "a_to_b" ? "a" : "b", ranges);
+      totalHits += ranges.length;
+    }
+    searchInfo.textContent = "найдено: " + totalHits;
+  }
+
+  loadBtn.addEventListener("click", loadSession);
+  searchBtn.addEventListener("click", search);
+  searchText.addEventListener("keydown", (e) => { if (e.key === "Enter") search(); });
+})();
+</script>
+{% endblock %}

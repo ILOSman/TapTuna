@@ -10,6 +10,10 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
+import tempfile
+import shutil
+from werkzeug.utils import secure_filename
+
 from flask import Blueprint, Flask, Response, jsonify, request, current_app
 
 from .action_log import (
@@ -153,6 +157,79 @@ def api_list_projects():
 
 
 # --- Ingest (job-based) ---
+
+@bp.route("/projects/<project_id>/upload", methods=["POST"])
+def api_upload_capture(project_id: str):
+    """Загрузка PCAP через multipart/form-data и запуск ingest через job.
+
+    Принимает form-data с полем 'file'. Файл сохраняется во временный
+    каталог; ingest_capture сам решает, копировать его в project/captures/
+    (no_copy=False, по умолчанию) или ссылаться по абсолютному пути.
+    Временный каталог удаляется после завершения job'а.
+
+    Возвращает {job_id, state, filename, size} — прогресс через SSE.
+    """
+    p = _get_project(project_id)
+
+    if "file" not in request.files:
+        return _error("MISSING_FILE", "form field 'file' is required")
+    f = request.files["file"]
+    if not f.filename:
+        return _error("EMPTY_FILENAME", "uploaded file has no name")
+
+    suffix = Path(f.filename).suffix.lower()
+    if suffix not in (".pcap", ".pcapng", ".cap"):
+        return _error(
+            "BAD_EXTENSION",
+            f"expected .pcap / .pcapng / .cap, got {suffix!r}",
+            details={"filename": f.filename},
+        )
+
+    # Сохраняем во временный каталог
+    tmpdir = Path(tempfile.mkdtemp(prefix="taptuna_upload_"))
+    safe_name = secure_filename(f.filename) or f"upload{suffix}"
+    tmp_path = tmpdir / safe_name
+    f.save(str(tmp_path))
+
+    size = tmp_path.stat().st_size
+    if size == 0:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        return _error("EMPTY_FILE", "uploaded file is empty")
+
+    no_copy = request.form.get("no_copy", "false").lower() in ("1", "true", "yes")
+
+    mgr = get_job_manager()
+
+    def worker(job):
+        def _progress(msg: str, frac: float) -> None:
+            if job.is_cancelled():
+                raise JobCancelled()
+            job.progress(msg, frac)
+
+        try:
+            return ingest_capture(
+                project_dir=p,
+                input_path=tmp_path,
+                no_copy=no_copy,
+                progress=_progress,
+                cancel_check=lambda: job.is_cancelled(),
+            )
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+    job = mgr.run("ingest", worker, params={
+        "project_id": project_id,
+        "filename": f.filename,
+        "size": size,
+        "source": "upload",
+    })
+
+    return _ok({
+        "job_id": job.id,
+        "state": job.state.value,
+        "filename": f.filename,
+        "size": size,
+    }, 202)
 
 @bp.route("/projects/<project_id>/captures", methods=["POST"])
 def api_ingest_capture(project_id: str):
@@ -476,10 +553,32 @@ def api_add_interpretation(project_id: str):
     source_yaml = body.get("source_yaml", "")
     source_hash = hashlib.sha256(source_yaml.encode("utf-8")).hexdigest()
 
-    framing = json.dumps(body.get("framing") or {})
-    fields = json.dumps(body.get("fields") or {})
-    constraints = json.dumps(body.get("constraints") or [])
-    semantics = json.dumps(body.get("semantics") or {})
+    # Если блоки не переданы отдельно — попробуем распарсить source_yaml
+    framing_obj = body.get("framing")
+    fields_obj = body.get("fields")
+    constraints_obj = body.get("constraints")
+    semantics_obj = body.get("semantics")
+
+    if (framing_obj is None and fields_obj is None and source_yaml.strip()):
+        import yaml as _yaml  # type: ignore
+        try:
+            parsed = _yaml.safe_load(source_yaml) or {}
+            if isinstance(parsed, dict):
+                framing_obj = parsed.get("framing") or {}
+                fields_obj = parsed.get("fields") or {}
+                constraints_obj = parsed.get("constraints") or []
+                semantics_obj = parsed.get("semantics") or {}
+                # Для script-интерпретаций: user code лежит в поле code
+                if kind == "script" and isinstance(parsed.get("code"), str):
+                    pass  # source_yaml и так хранит код целиком
+        except Exception as e:
+            return _error("BAD_YAML", f"YAML parse error: {e}",
+                          details={"source_yaml_head": source_yaml[:200]})
+
+    framing = json.dumps(framing_obj or {})
+    fields = json.dumps(fields_obj or {})
+    constraints = json.dumps(constraints_obj or [])
+    semantics = json.dumps(semantics_obj or {})
 
     conn = open_db(p)
     try:

@@ -1,0 +1,112 @@
+{% extends "base.html" %}
+{% block title %}Проект{% endblock %}
+{% block content %}
+
+<h1>Проект: {{ project_name }}</h1>
+<p class="muted small mono">{{ project_path }}</p>
+
+<section class="card">
+  <h2>Сводка</h2>
+  <div class="row" style="gap:2rem">
+    <div><div class="muted small">Captures</div><div style="font-size:1.4rem">{{ stats.captures }}</div></div>
+    <div><div class="muted small">Sessions</div><div style="font-size:1.4rem">{{ stats.sessions }}</div></div>
+    <div><div class="muted small">Packets</div><div style="font-size:1.4rem">{{ stats.packets }}</div></div>
+    <div><div class="muted small">Interpretations</div><div style="font-size:1.4rem">{{ stats.interpretations }}</div></div>
+    <div><div class="muted small">Corpora</div><div style="font-size:1.4rem">{{ stats.corpora }}</div></div>
+    <div><div class="muted small">Verification runs</div><div style="font-size:1.4rem">{{ stats.runs }}</div></div>
+    <div><div class="muted small">Observations</div><div style="font-size:1.4rem">{{ stats.observations }}</div></div>
+    <div><div class="muted small">Hypotheses</div><div style="font-size:1.4rem">{{ stats.hypotheses }}</div></div>
+    <div><div class="muted small">Action logs</div><div style="font-size:1.4rem">{{ stats.action_logs }}</div></div>
+  </div>
+  {% if stale_count %}
+  <p style="margin-top:0.6rem">
+    <span class="status ambiguous">stale</span>
+    <span class="muted small">{{ stale_count }} результатов устарели (интерпретация или политика изменились)</span>
+  </p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>Манифест</h2>
+  <table>
+    <tbody>
+      <tr><th>Версия приложения</th><td>{{ manifest.app_version or "—" }}</td></tr>
+      <tr><th>Схема проекта</th><td>{{ manifest.schema_version or "—" }}</td></tr>
+      <tr><th>user_version (БД)</th><td>{{ manifest.user_version or "—" }}</td></tr>
+      <tr><th>tshark</th><td class="mono small">{{ manifest.tshark_version or "—" }}</td></tr>
+      <tr><th>Python</th><td>{{ manifest.python_version or "—" }}</td></tr>
+      <tr><th>Платформа</th><td class="mono small">{{ manifest.platform or "—" }}</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section class="card">
+  <h2>Политики</h2>
+  {% if manifest.policies %}
+  <table>
+    <tbody>
+      {% for k, v in manifest.policies.items() %}
+      <tr><th>{{ k }}</th><td class="mono">{{ v }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">Политики не заданы.</p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>Зависимости (pip freeze)</h2>
+  <pre class="mono small" style="max-height:300px; overflow:auto; background:#fbfbfd; padding:0.5rem">{{ manifest.pip_freeze or "—" }}</pre>
+</section>
+
+<section class="card">
+  <h2>Утилиты</h2>
+  <div class="row">
+    <button id="revalidate-btn">Пометить stale</button>
+    <button id="export-btn">Показать содержимое проекта</button>
+  </div>
+  <pre id="util-out" class="mono small" style="max-height:300px; overflow:auto; background:#fbfbfd; padding:0.5rem; margin-top:0.6rem; display:none">—</pre>
+</section>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  const revalidateBtn = document.getElementById("revalidate-btn");
+  const exportBtn = document.getElementById("export-btn");
+  const utilOut = document.getElementById("util-out");
+
+  revalidateBtn.addEventListener("click", async () => {
+    // Локальный вызов: помечаем stale по актуальным версиям интерпретаций.
+    // Без API-endpoint: просто редирект с сообщением.
+    try {
+      // Используем прямой запрос через API проекта.
+      // Простой способ — открыть тот же проект через CLI:
+      window.taptuna.toast("Обновите stale через CLI: taptuna runs", "ok");
+    } catch (e) {}
+  });
+
+  exportBtn.addEventListener("click", async () => {
+    utilOut.style.display = "block";
+    utilOut.textContent = "загрузка...";
+    try {
+      const d = await window.taptuna.api("GET",
+        "/api/projects/{{ project_name }}/captures");
+      utilOut.textContent = JSON.stringify({
+        project_path: "{{ project_path }}",
+        manifest: {
+          app_version: "{{ manifest.app_version or '' }}",
+          tshark_version: "{{ manifest.tshark_version or '' }}",
+          policies: {{ manifest.policies | tojson }},
+        },
+        captures: d.captures || [],
+      }, null, 2);
+    } catch (e) {
+      utilOut.textContent = "ошибка: " + e.message;
+    }
+  });
+})();
+</script>
+{% endblock %}

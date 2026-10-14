@@ -1,16 +1,18 @@
-```jinja
 # Отчёт о верификации протокола
 
-**Интерпретация:** `{{ interpretation.name }}@v{{ interpretation.version }}`  
-**Прогон:** #{{ run.id }}, вердикт: **{{ summary.verdict | default('unknown') }}**  
-**Run hash:** `{{ summary.run_hash | default('—') }}`  
-**Дата:** {{ run.finished_at | default('—') }}
+| | |
+|---|---|
+| **Интерпретация** | `{{ interpretation.name }}@v{{ interpretation.version }}` |
+| **Прогон** | #{{ run.id }} |
+| **Вердикт** | **{{ summary.verdict | default('unknown') }}** |
+| **Run hash** | `{{ summary.run_hash | default('—') }}` |
+| **Дата** | {{ run.finished_at | default('—') }} |
 
 ## 1. Цели и границы
 
-Цель: верификация гипотез о структуре протокола на корпусе `{{ corpus.name }}`.
+Цель — верификация гипотез о структуре протокола на корпусе `{{ corpus.name }}`.
 
-Границы: анализ ограничен TCP-потоками и framing/fields в рамках выбранной интерпретации.
+Границы: анализ ограничен TCP-потоками и применением framing/fields в рамках выбранной интерпретации.
 
 ## 2. Метод
 
@@ -20,31 +22,30 @@
 - **Overlap policy:** `{{ manifest.policies.overlap | default('unknown') }}`
 - **Checksum policy:** `{{ manifest.policies.checksum | default('unknown') }}`
 
-Команда ingest:
+Команда ingest (один вызов на файл, поля — §6.2):
 
-```
-tshark -r <file> -T fields -E separator=\t -E occurrence=f \
+```bash
+tshark -r <file> -T fields \
+  -E separator=$'\t' -E occurrence=f \
 {% for f in ["tcp.stream", "frame.number", "frame.time_epoch", "ip.src", "ip.dst", "tcp.srcport", "tcp.dstport", "tcp.seq", "tcp.ack", "tcp.len", "tcp.flags.syn", "tcp.flags.ack", "tcp.flags.fin", "tcp.flags.reset", "tcp.payload"] %}  -e {{ f }} \
-{% endfor %}
-```
+{% endfor %}```
 
 ## 3. Корпус
 
-Название: `{{ corpus.name }}`
-
-Критерии: `{{ corpus.criteria_json }}`
+- **Название:** `{{ corpus.name }}`
+- **Критерии:** `{{ corpus.criteria_json }}`
 
 Записи:
 
 {% for c in captures %}
-- `{{ c.sha256[:16] }}…` — {{ c.filename }} ({{ c.packet_count }} пакетов)
+- `{{ c.sha256[:16] }}…` — `{{ c.filename }}` ({{ c.packet_count }} пакетов)
 {% endfor %}
 
 ## 4. Проверенные примеры
 
 {% if verified_examples %}
 {% for ex in verified_examples[:10] %}
-- Сообщение #{{ ex.message_index }} @ offset {{ ex.stream_offset }}, длина {{ ex.length }}: `{{ ex.message_name }}`
+- Сообщение #{{ ex.message_index }} @ offset `{{ ex.stream_offset }}`, длина `{{ ex.length }}`: `{{ ex.message_name }}`
 {% endfor %}
 {% else %}
 _Нет проверенных примеров._
@@ -54,7 +55,7 @@ _Нет проверенных примеров._
 
 {% if counterexamples %}
 {% for ex in counterexamples[:10] %}
-- **{{ ex.status }}** Сообщение #{{ ex.message_index }} @ offset {{ ex.stream_offset }}: {{ ex.message_name }}
+- **{{ ex.status }}** — сообщение #{{ ex.message_index }} @ offset `{{ ex.stream_offset }}`, `{{ ex.message_name }}`
 {% endfor %}
 {% else %}
 _Контрпримеры не обнаружены._
@@ -64,7 +65,7 @@ _Контрпримеры не обнаружены._
 
 {% if unknown_areas %}
 {% for ex in unknown_areas[:10] %}
-- {{ ex.status }} @ offset {{ ex.stream_offset }}, длина {{ ex.length }}
+- {{ ex.status }} @ offset `{{ ex.stream_offset }}`, длина `{{ ex.length }}`
 {% endfor %}
 {% else %}
 _Неизвестные участки отсутствуют._
@@ -72,7 +73,7 @@ _Неизвестные участки отсутствуют._
 
 ## 7. Область применимости
 
-Модель применима к TCP-потокам, соответствующим критериям корпуса `{{ corpus.name }}`. Перенос на другие протоколы и порты требует переобучения/перепроверки.
+Модель применима к TCP-потокам, соответствующим критериям корпуса `{{ corpus.name }}`. Перенос на другие протоколы и порты требует переобучения и перепроверки.
 
 ## 8. Открытые вопросы
 
@@ -98,10 +99,9 @@ Checksum-поля IP/TCP могут быть некорректны в захв�
 
 | Статус | Количество |
 |---|---|
-| ok | {{ status_counts.ok | default(0) }} |
-| violation | {{ status_counts.violation | default(0) }} |
-| ambiguous | {{ status_counts.ambiguous | default(0) }} |
-| incomplete | {{ status_counts.incomplete | default(0) }} |
-| not_applicable | {{ status_counts.not_applicable | default(0) }} |
-| unknown_frame | {{ status_counts.unknown_frame | default(0) }} |
-```
+| `ok` | {{ status_counts.ok | default(0) }} |
+| `violation` | {{ status_counts.violation | default(0) }} |
+| `ambiguous` | {{ status_counts.ambiguous | default(0) }} |
+| `incomplete` | {{ status_counts.incomplete | default(0) }} |
+| `not_applicable` | {{ status_counts.not_applicable | default(0) }} |
+| `unknown_frame` | {{ status_counts.unknown_frame | default(0) }} |

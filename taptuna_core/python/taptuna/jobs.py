@@ -59,11 +59,26 @@ class JobEvent:
     ts: float = field(default_factory=time.time)
 
     def to_sse(self) -> str:
-        """Сериализует в SSE-формат."""
-        payload = json.dumps({"ts": self.ts, **self.data}, ensure_ascii=False)
+        """Сериализует в SSE-формат. Path и прочие нестандартные типы — в str."""
+        payload = json.dumps(
+            {"ts": self.ts, **self.data},
+            ensure_ascii=False,
+            default=_json_default,
+        )
         return f"event: {self.event_type}\ndata: {payload}\n\n"
 
 
+def _json_default(o: Any) -> Any:
+    """JSON-сериализатор: Path → str, bytes → hex, остальное — str()."""
+    from pathlib import Path as _Path
+    if isinstance(o, _Path):
+        return str(o)
+    if isinstance(o, (bytes, bytearray)):
+        return bytes(o).hex()
+    if isinstance(o, set):
+        return sorted(o)
+    # последний шанс — привести к строке
+    return str(o)
 # ---------------------------------------------------------------------------
 # Job
 # ---------------------------------------------------------------------------

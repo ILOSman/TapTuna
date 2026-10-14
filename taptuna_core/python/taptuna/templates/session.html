@@ -1,0 +1,187 @@
+{% extends "base.html" %}
+{% block title %}Сессия #{{ session.id }}{% endblock %}
+{% block content %}
+
+<h1>Сессия #{{ session.id }}
+  <span class="muted small">({{ session.capture_name }})</span>
+</h1>
+
+<div class="card">
+  <div class="row">
+    <div><strong>5-tuple:</strong>
+      <span class="mono">{{ session.ip_src }}:{{ session.port_src }}
+        ↔ {{ session.ip_dst }}:{{ session.port_dst }}</span>
+    </div>
+    <div><strong>Stream:</strong> {{ session.stream_index }}</div>
+    <div><strong>Роли:</strong>
+      {% if session.roles_established %}<span class="status ok">SYN</span>
+      {% else %}<span class="muted">не установлены</span>{% endif %}
+    </div>
+    <div><strong>Пакеты:</strong> {{ session.packets_a2b }} → / {{ session.packets_b2a }} ←</div>
+    <div><strong>Байты:</strong> {{ session.bytes_a2b }} → / {{ session.bytes_b2a }} ←</div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="row">
+    <label><strong>Направление:</strong></label>
+    <select id="dir-select">
+      {% for d in directions %}
+      <option value="{{ d.id }}" data-dir="{{ d.direction }}"
+              data-gaps='{{ d.gaps_json|safe }}'
+              data-ambiguities='{{ d.ambiguities_json|safe }}'
+              data-size="{{ d.reassembled_bytes }}">
+        {{ d.direction }} ({{ d.reassembled_bytes }} байт, gaps={{ d.gaps_json|length }}, overlap={{ d.ambiguities_json|length }})
+      </option>
+      {% endfor %}
+    </select>
+    <span class="spacer"></span>
+    <label>offset: <input type="number" id="jump-offset" style="width:120px" value="0" min="0"></label>
+    <button id="jump-btn">Перейти</button>
+  </div>
+
+  {% for d in directions %}
+  <div class="dir-meta small muted" data-dir-id="{{ d.id }}"
+       style="display:none; margin-top:0.5rem">
+    policy={{ d.overlap_policy }},
+    stream_start_abs_seq={{ d.stream_start_abs_seq }}
+  </div>
+  {% endfor %}
+</div>
+
+<div class="card">
+  <div class="row">
+    <h2 style="margin:0">Поток</h2>
+    <span class="spacer"></span>
+    <span class="muted small" id="hex-info">—</span>
+    <button id="reload-btn">Перезагрузить</button>
+  </div>
+  <div class="hex" id="hex-view">загрузка...</div>
+</div>
+
+<div class="card">
+  <h2>Пакеты</h2>
+  <div id="packets-list">загрузка...</div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  const dirSelect = document.getElementById("dir-select");
+  const hexView = document.getElementById("hex-view");
+  const hexInfo = document.getElementById("hex-info");
+  const packetsList = document.getElementById("packets-list");
+  const jumpOffset = document.getElementById("jump-offset");
+  const jumpBtn = document.getElementById("jump-btn");
+  const reloadBtn = document.getElementById("reload-btn");
+  if (!dirSelect) return;
+
+  // Кеш меты: direction_id -> {gaps, ambiguities, size}
+  const dirMeta = {};
+  for (const opt of dirSelect.options) {
+    dirMeta[opt.value] = {
+      direction: opt.dataset.dir,
+      gaps: JSON.parse(opt.dataset.gaps || "[]"),
+      ambiguities: JSON.parse(opt.dataset.ambiguities || "[]"),
+      size: parseInt(opt.dataset.size || "0", 10),
+    };
+  }
+
+  // Мета-блоки под селектором
+  function updateMeta() {
+    document.querySelectorAll(".dir-meta").forEach((el) => {
+      el.style.display = el.dataset.dirId === dirSelect.value ? "block" : "none";
+    });
+  }
+
+  async function loadStream(directionId) {
+    hexView.textContent = "загрузка...";
+    const meta = dirMeta[directionId] || {};
+    const size = meta.size || 0;
+    // Ограничиваем 256 КиБ, остальное — по jump
+    const maxBytes = Math.min(size, 256 * 1024);
+    try {
+      const r = await fetch(
+        "/api/sessions/{{ session.id }}/stream/" + meta.direction + "/bytes?project_id={{ project_name }}&offset=0&length=" + maxBytes
+      );
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      const buf = new Uint8Array(await r.arrayBuffer());
+
+      const marks = [];
+      for (const g of meta.gaps) {
+        marks.push({ start: g.offset, end: g.offset + g.length, kind: "gap" });
+      }
+      for (const a of meta.ambiguities) {
+        marks.push({ start: a.offset, end: a.offset + a.length, kind: "amb" });
+      }
+      window.taptuna.renderHex(hexView, buf, { marks });
+      hexInfo.textContent = buf.length + " / " + size + " байт, gaps=" + meta.gaps.length +
+                            ", overlap=" + meta.ambiguities.length;
+    } catch (e) {
+      hexView.textContent = "ошибка: " + e.message;
+    }
+  }
+
+  async function loadPackets() {
+    packetsList.textContent = "загрузка...";
+    try {
+      const r = await fetch("/api/sessions/{{ session.id }}/packets?project_id={{ project_name }}");
+      const d = await r.json();
+      const packets = d.packets || [];
+      if (!packets.length) {
+        packetsList.innerHTML = '<p class="muted">Пакетов нет.</p>';
+        return;
+      }
+      let html = '<table><thead><tr>' +
+        '<th>Frame</th><th>Direction</th><th>Seq</th><th>Len</th>' +
+        '<th>Flags</th><th>Offset</th><th>Payload</th>' +
+        '</tr></thead><tbody>';
+      for (const p of packets) {
+        const flags = [
+          p.flags_syn ? "S" : "",
+          p.flags_ack ? "A" : "",
+          p.flags_fin ? "F" : "",
+          p.flags_rst ? "R" : "",
+        ].filter(Boolean).join("") || "—";
+        const off = p.stream_offset != null ? p.stream_offset : "—";
+        const sha = p.payload_sha256 ? p.payload_sha256.slice(0, 12) + "…" : "—";
+        html += '<tr>' +
+          '<td class="mono">' + p.frame_number + '</td>' +
+          '<td>' + p.direction_id + '</td>' +
+          '<td class="mono">' + p.abs_seq + '</td>' +
+          '<td>' + p.tcp_len + '</td>' +
+          '<td class="mono">' + flags + '</td>' +
+          '<td>' + off + '</td>' +
+          '<td class="mono small">' + sha + '</td>' +
+          '</tr>';
+      }
+      html += "</tbody></table>";
+      packetsList.innerHTML = html;
+    } catch (e) {
+      packetsList.textContent = "ошибка: " + e.message;
+    }
+  }
+
+  function refresh() {
+    const id = dirSelect.value;
+    loadStream(id);
+    loadPackets();
+    updateMeta();
+  }
+
+  dirSelect.addEventListener("change", refresh);
+  reloadBtn.addEventListener("click", refresh);
+  jumpBtn.addEventListener("click", () => {
+    // Просто прокрутим hex-view к нужному offset (примерно)
+    const off = parseInt(jumpOffset.value || "0", 10);
+    // 16 байт на строку ~ 66 символов на строку в <pre>
+    const line = Math.floor(off / 16);
+    hexView.scrollTop = line * 16;
+  });
+
+  refresh();
+})();
+</script>
+{% endblock %}
