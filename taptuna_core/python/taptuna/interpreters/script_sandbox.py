@@ -101,31 +101,26 @@ def _build_safe_builtins() -> dict:
     return safe
 
 def _get_mp_context() -> mp.context.BaseContext:
-    """Выбирает безопасный multiprocessing-контекст.
+    """Выбирает multiprocessing-контекст.
 
-    Проблема: spawn и forkserver пере-импортируют __main__.
-    Если родитель запущен из stdin (heredoc, REPL, notebook, -c),
-    это падает с FileNotFoundError: '<stdin>'.
+    fork — предпочтителен на POSIX: дочерний процесс наследует fds
+    родителя (важно для stderr-пайпа), не пере-импортирует __main__
+    (критично при работе внутри pytest), корректно взаимодействует с
+    RLIMIT_*.
 
-    Решение: в этом случае используем fork (Linux/macOS), который
-    не требует пере-импорта. Для production (запуск из файла)
-    остаются forkserver/spawn — они чище.
+    forkserver/spawn оставлены как fallback для Windows и экзотики,
+    но с ними fd-based коммуникация требует более сложной упаковки.
+
+    Принудительный выбор: TAPTUNA_MP_METHOD=fork|forkserver|spawn.
     """
-    main_mod = sys.modules.get("__main__")
-    main_file = getattr(main_mod, "__file__", None)
-    from_stdin = (
-        main_file is None
-        or main_file in ("<stdin>", "<string>", "-c")
-        or (isinstance(main_file, str) and not os.path.exists(main_file))
-    )
-
-    if from_stdin:
+    forced = os.environ.get("TAPTUNA_MP_METHOD")
+    if forced:
         try:
-            return mp.get_context("fork")
-        except (ValueError, OSError):
-            pass  # fork недоступен (Windows) — падаем на общий путь
+            return mp.get_context(forced)
+        except ValueError:
+            pass
 
-    for method in ("forkserver", "spawn"):
+    for method in ("fork", "forkserver", "spawn"):
         try:
             return mp.get_context(method)
         except (ValueError, OSError):
@@ -204,6 +199,20 @@ class _Job:
     payload: bytes
 
 
+def _flush_queue(q: Any) -> None:
+    """Ждёт, пока feeder-поток multiprocessing.Queue сбросит данные в pipe.
+
+    Без этого Queue.put() может «потерять» данные, если процесс завершается
+    сразу после put(): put() возвращает управление, когда объект попал во
+    внутренний буфер, а feeder-поток ещё не дописал его в pipe.
+    """
+    try:
+        q.close()
+        q.join_thread()
+    except (OSError, ValueError, AttributeError):
+        pass
+
+
 def _worker_main(
     code: str,
     jobs: "mp.Queue[Optional[_Job]]",
@@ -214,7 +223,6 @@ def _worker_main(
     seed: int,
 ) -> None:
     """Точка входа worker-процесса."""
-    # Перенаправляем stderr в pipe, чтобы родитель его вычитал.
     try:
         os.dup2(stderr_pipe_fd, 2)
         os.close(stderr_pipe_fd)
@@ -236,6 +244,7 @@ def _worker_main(
         results.put({
             "fatal": f"compile failed: {type(e).__name__}: {e}",
         })
+        _flush_queue(results)
         return
 
     handler = user_module.get("interpret")
@@ -243,35 +252,41 @@ def _worker_main(
         results.put({
             "fatal": "no callable 'interpret(message, index, stream_offset) -> dict'",
         })
+        _flush_queue(results)
         return
 
     # Основной цикл
-    while True:
-        try:
-            job = jobs.get(timeout=60)
-        except queue.Empty:
-            results.put({"fatal": "worker idle timeout"})
-            return
-        if job is None:
-            return  # сигнал завершения
+    try:
+        while True:
+            try:
+                job = jobs.get(timeout=60)
+            except queue.Empty:
+                results.put({"fatal": "worker idle timeout"})
+                break
+            if job is None:
+                break
 
-        try:
-            out = handler(job.payload, job.index, job.stream_offset)
-            if not isinstance(out, dict):
-                raise TypeError("interpret() must return dict")
-            results.put({
-                "index": job.index,
-                "stream_offset": job.stream_offset,
-                "length": job.length,
-                "result": out,
-            })
-        except BaseException as e:
-            results.put({
-                "index": job.index,
-                "stream_offset": job.stream_offset,
-                "length": job.length,
-                "error": f"{type(e).__name__}: {e}",
-            })
+            try:
+                out = handler(job.payload, job.index, job.stream_offset)
+                if not isinstance(out, dict):
+                    raise TypeError("interpret() must return dict")
+                results.put({
+                    "index": job.index,
+                    "stream_offset": job.stream_offset,
+                    "length": job.length,
+                    "result": out,
+                })
+            except BaseException as e:
+                results.put({
+                    "index": job.index,
+                    "stream_offset": job.stream_offset,
+                    "length": job.length,
+                    "error": f"{type(e).__name__}: {e}",
+                })
+    finally:
+        # Критично: дождаться, пока все put() реально попадут в pipe
+        # до завершения процесса.
+        _flush_queue(results)
 
 
 # ---------------------------------------------------------------------------
@@ -302,12 +317,7 @@ class ScriptInterpreter(BaseInterpreter):
         self._seed = seed
 
     def interpret(self, stream: bytes, direction_id: int) -> list[MessageResult]:
-        """Запускает worker, прогоняет все сообщения, собирает результаты.
-
-        Framing должен быть выполнен до вызова этого метода. Здесь
-        stream — это reassembled поток; сообщения определяются по
-        spec['framing'] (если задан) либо по spec['message_size'].
-        """
+        """Запускает worker, прогоняет все сообщения, собирает результаты."""
         messages = self._split_messages(stream)
         if not messages:
             return []
@@ -324,7 +334,7 @@ class ScriptInterpreter(BaseInterpreter):
             daemon=True,
         )
         worker.start()
-        os.close(w_stderr)  # родитель не пишет в pipe
+        os.close(w_stderr)
 
         # Вычитываем stderr параллельно, иначе дедлок на 64 КиБ.
         stderr_buf: list[bytes] = []
@@ -343,27 +353,44 @@ class ScriptInterpreter(BaseInterpreter):
         reader = threading.Thread(target=_read_stderr, daemon=True)
         reader.start()
 
-        # Отправляем задачи
+        # Отправляем задачи + сигнал завершения.
         for m in messages:
             jobs.put(m)
-        jobs.put(None)  # сигнал завершения
+        jobs.put(None)
 
-        # Собираем результаты с учётом таймаута
-        collected: dict[int, dict] = {}
-        deadline = time.monotonic() + self._timeout_per_message * max(len(messages), 1) + 0.5
+        # Ждём завершения worker'а (или wall-clock timeout).
+        deadline = (
+            time.monotonic()
+            + self._timeout_per_message * max(len(messages), 1)
+            + 0.5
+        )
+        join_timeout = max(0.1, deadline - time.monotonic())
+        try:
+            worker.join(timeout=join_timeout)
+        except Exception:
+            pass
+
         fatal: Optional[str] = None
-
-        while len(collected) < len(messages):
-            if time.monotonic() > deadline:
-                fatal = "timeout (wall clock)"
-                break
+        if worker.is_alive():
+            # Wall-clock не дождались — kill и фиксируем.
+            fatal = "timeout (wall clock)"
             try:
-                item = results.get(timeout=0.1)
+                worker.kill()
+                worker.join(timeout=2.0)
+            except Exception:
+                pass
+
+        # Дренируем очередь: get() с реальным таймаутом, чтобы
+        # reader-поток Queue успел вычитать данные из pipe.
+        collected: dict[int, dict] = {}
+        empty_streak = 0
+        while len(collected) < len(messages) and empty_streak < 3:
+            try:
+                item = results.get(timeout=0.2)
             except queue.Empty:
-                if not worker.is_alive():
-                    fatal = _describe_worker_exit(worker.exitcode)
-                    break
+                empty_streak += 1
                 continue
+            empty_streak = 0
             if "fatal" in item:
                 fatal = item["fatal"]
                 break
@@ -371,21 +398,18 @@ class ScriptInterpreter(BaseInterpreter):
             if idx is not None:
                 collected[idx] = item
 
-        # Убиваем worker и закрываем ресурсы
-        stop_reader.set()
-        try:
-            if worker.is_alive():
-                worker.kill()
-            worker.join(timeout=2.0)
-        except Exception:
-            pass
+        if not fatal and not worker.is_alive() and len(collected) < len(messages):
+            # Результатов действительно не хватило — worker упал без них.
+            fatal = _describe_worker_exit(worker.exitcode)
 
+        # Закрываем reader и освобождаем pipe.
+        stop_reader.set()
         try:
             os.close(r_stderr)
         except OSError:
             pass
 
-        # Формируем MessageResult
+        # Формируем MessageResult.
         results_out: list[MessageResult] = []
         for m in messages:
             if m.index in collected:
@@ -414,7 +438,10 @@ class ScriptInterpreter(BaseInterpreter):
             else:
                 notes = [fatal] if fatal else ["no result from worker"]
                 if stderr_buf:
-                    notes.append("stderr: " + b"".join(stderr_buf)[:200].decode("utf-8", "replace"))
+                    notes.append(
+                        "stderr: "
+                        + b"".join(stderr_buf)[:200].decode("utf-8", "replace")
+                    )
                 results_out.append(MessageResult(
                     index=m.index,
                     stream_offset=m.stream_offset,
