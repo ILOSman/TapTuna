@@ -1,7 +1,7 @@
 use proptest::prelude::*;
 
-use taptuna_core::reassembly::{reassemble, OverlapPolicy, ReassemblyInput};
-use taptuna_core::seq::{sort_segments, Segment, SeqTracker};
+use _native::reassembly::{reassemble, OverlapPolicy, ReassemblyInput};
+use _native::seq::{sort_segments, Segment, SeqTracker};
 
 fn arb_segment() -> impl Strategy<Value = Segment> {
     (0u32..1000u32, 1usize..32, 1u32..100u32).prop_map(|(seq, len, frame)| {

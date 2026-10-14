@@ -246,7 +246,7 @@ fn need_n(b: &[u8], n: usize) -> Result<&[u8], ExtractError> {
 mod tests {
     use super::*;
 
-    fn bytes_len_field(name: &str) -> FieldSpec {
+        fn bytes_len_field(name: &str) -> FieldSpec {
         FieldSpec {
             name: name.into(),
             field_type: FieldType::U16Be,
@@ -258,16 +258,17 @@ mod tests {
     #[test]
     fn simple_header() {
         // magic (2) | len (2) | payload (len bytes)
+        // NOTE: first field must use Fixed(0), not Auto.
         let spec = MessageSpec {
             name: "test".into(),
             fields: vec![
                 FieldSpec {
                     name: "magic".into(),
                     field_type: FieldType::U16Be,
-                    offset: OffsetSpec::Auto,
+                    offset: OffsetSpec::Fixed(0),
                     size: SizeSpec::Fixed(2),
                 },
-                bytes_len_field("len"),
+                bytes_len_field("len"), // Auto — ok, это второе поле
                 FieldSpec {
                     name: "payload".into(),
                     field_type: FieldType::Bytes,
@@ -285,11 +286,22 @@ mod tests {
 
     #[test]
     fn too_short() {
+        // Fixed(0) — чтобы первое поле не падало на AutoOnFirst,
+        // а тест проверял именно нехватку байт.
         let spec = MessageSpec {
             name: "t".into(),
-            fields: vec![bytes_len_field("a")],
+            fields: vec![FieldSpec {
+                name: "a".into(),
+                field_type: FieldType::U16Be,
+                offset: OffsetSpec::Fixed(0),
+                size: SizeSpec::Fixed(2),
+            }],
         };
         let err = extract(&spec, b"\x01").unwrap_err();
-        assert!(matches!(err, ExtractError::TooShort { .. }));
+        assert!(
+            matches!(err, ExtractError::TooShort { .. }),
+            "expected TooShort, got {:?}",
+            err
+        );
     }
 }

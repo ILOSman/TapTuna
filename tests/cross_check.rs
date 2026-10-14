@@ -4,8 +4,8 @@
 //! harness can read.
 
 use sha2::{Digest, Sha256};
-use taptuna_core::reassembly::{reassemble, OverlapPolicy, ReassemblyInput};
-use taptuna_core::seq::Segment;
+use _native::reassembly::{reassemble, OverlapPolicy, ReassemblyInput};
+use _native::seq::Segment;
 
 fn hash_stream(data: &[u8], gaps: &[(u64, u64)]) -> String {
     let mut h = Sha256::new();

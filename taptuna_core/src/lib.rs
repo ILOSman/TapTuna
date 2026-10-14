@@ -1,11 +1,12 @@
 use pyo3::prelude::*;
 
-mod wire;
-mod seq;
-mod reassembly;
-mod safe_eval;
-mod extract;
-mod framing;
+pub mod wire;
+pub mod seq;
+pub mod reassembly;
+pub mod safe_eval;
+pub mod extract;
+pub mod framing;
+
 mod wire_py;
 mod seq_py;
 mod reassembly_py;

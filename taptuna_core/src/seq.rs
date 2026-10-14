@@ -206,7 +206,7 @@ mod tests {
 
     #[test]
     fn test_seq_tracker_with_syn() {
-        let mut tracker = SeqTracker::new(Some(1000));
+        let tracker = SeqTracker::new(Some(1000));
         assert_eq!(tracker.reference(), 1001);
         assert!(tracker.is_initialized());
         assert_eq!(tracker.isn(), Some(1000));

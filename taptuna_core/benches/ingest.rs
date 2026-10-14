@@ -1,7 +1,7 @@
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion, Throughput};
 
-use taptuna_core::reassembly::{reassemble, OverlapPolicy, ReassemblyInput};
-use taptuna_core::seq::Segment;
+use _native::reassembly::{reassemble, OverlapPolicy, ReassemblyInput};
+use _native::seq::Segment;
 
 fn make_stream(bytes: usize, seg_size: usize) -> Vec<Segment> {
     let mut out = Vec::new();
