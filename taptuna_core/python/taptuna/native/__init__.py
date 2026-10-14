@@ -22,9 +22,9 @@ _native_error: Optional[str] = None
 if os.environ.get("TAPTUNA_NATIVE", "1") != "0":
     try:
         from taptuna import _native as _native  # type: ignore
-    except ImportError as e:
+    except BaseException as e:
         _native = None
-        _native_error = str(e)
+        _native_error = f"{type(e).__name__}: {e}"
 
 HAS_NATIVE: bool = _native is not None
 
