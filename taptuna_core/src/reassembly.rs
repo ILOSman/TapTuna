@@ -63,11 +63,8 @@ pub enum SegmentStatus {
 /// that contributed it. Intervals are disjoint and sorted by `start`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ByteMapEntry {
-    /// Inclusive start offset in the reassembled stream.
     pub start: u64,
-    /// Exclusive end offset in the reassembled stream.
     pub end: u64,
-    /// Frame number that provided bytes in `[start, end)`.
     pub frame: u32,
 }
 
@@ -93,7 +90,6 @@ pub struct ReassembledStream {
 
 impl ReassembledStream {
     /// Find the frame that contributed the byte at `offset`, if known.
-    /// Returns `None` if the offset falls inside a gap or beyond the stream.
     pub fn frame_at(&self, offset: u64) -> Option<u32> {
         let mut lo = 0usize;
         let mut hi = self.byte_map.len();
@@ -142,7 +138,6 @@ pub fn reassemble(input: ReassemblyInput) -> ReassembledStream {
     let mut tracker = SeqTracker::new(input.syn_seq);
     let roles_established = input.syn_seq.is_some();
 
-    // Filter out zero-length segments
     segments.retain(|s| s.len > 0);
 
     // Deduplicate identical retransmissions but keep all frame info
@@ -170,7 +165,12 @@ pub fn reassemble(input: ReassemblyInput) -> ReassembledStream {
         0
     };
 
-    let mut known_data: Vec<(u64, u8)> = Vec::new();
+    // Рабочий буфер + интервалы записанных байт.
+    // Вместо Vec<(u64, u8)> (16 байт на байт данных) держим Vec<u8>
+    // и список неперекрывающихся интервалов [start, end).
+    let mut data: Vec<u8> = Vec::new();
+    let mut written: Vec<(u64, u64)> = Vec::new();
+
     let mut gaps: Vec<Gap> = Vec::new();
     let mut ambiguities: Vec<Ambiguity> = Vec::new();
     let mut stream_segments: Vec<StreamSegmentInfo> = Vec::new();
@@ -190,7 +190,7 @@ pub fn reassemble(input: ReassemblyInput) -> ReassembledStream {
             continue;
         }
 
-        // Check for gap before this segment
+        // Gap перед сегментом
         if seg_offset > contiguous_end_offset {
             let gap_len = seg_offset - contiguous_end_offset;
             gaps.push(Gap {
@@ -215,7 +215,7 @@ pub fn reassemble(input: ReassemblyInput) -> ReassembledStream {
             contiguous_end_offset = seg_offset;
         }
 
-        // Check for overlap with already written data
+        // Перекрытие с уже записанными данными
         let data_end_offset = seg_offset + seg.len as u64;
         let overlap_len = if data_end_offset >= contiguous_end_offset
             && seg_offset < contiguous_end_offset
@@ -226,11 +226,7 @@ pub fn reassemble(input: ReassemblyInput) -> ReassembledStream {
         };
 
         if overlap_len > 0 && overlap_len <= seg.len as u64 {
-            let existing_data: Vec<u8> = known_data
-                .iter()
-                .filter(|(off, _)| *off >= seg_offset && *off < seg_offset + overlap_len)
-                .map(|(_, b)| *b)
-                .collect();
+            let existing_data = read_range(&data, &written, seg_offset, overlap_len);
             let new_data = &seg.data[0..overlap_len as usize];
             let has_conflict = existing_data != new_data;
             if has_conflict {
@@ -243,26 +239,19 @@ pub fn reassemble(input: ReassemblyInput) -> ReassembledStream {
                 match input.overlap_policy {
                     OverlapPolicy::FirstWins => {}
                     OverlapPolicy::LastWins => {
-                        known_data.retain(|(off, _)| {
-                            *off < seg_offset || *off >= seg_offset + overlap_len
-                        });
-                        for (i, &byte) in seg.data[0..overlap_len as usize].iter().enumerate() {
-                            known_data.push((seg_offset + i as u64, byte));
-                        }
+                        write_range(&mut data, &mut written, seg_offset, new_data);
                     }
                     OverlapPolicy::HaltAndMark => {}
                 }
             }
         }
 
-        // Write non-overlapping tail
+        // Хвост без перекрытия
         let tail_start = overlap_len as usize;
         if tail_start < seg.data.len() {
             let tail = &seg.data[tail_start..];
             let tail_offset = seg_offset + tail_start as u64;
-            for (i, &byte) in tail.iter().enumerate() {
-                known_data.push((tail_offset + i as u64, byte));
-            }
+            write_range(&mut data, &mut written, tail_offset, tail);
             byte_map.push(ByteMapEntry {
                 start: tail_offset,
                 end: tail_offset + tail.len() as u64,
@@ -270,14 +259,12 @@ pub fn reassemble(input: ReassemblyInput) -> ReassembledStream {
             });
         }
 
-        // Update contiguous_end_offset
+        // Обновление contiguous_end_offset
         if seg_offset <= contiguous_end_offset && data_end_offset > contiguous_end_offset {
-            contiguous_end_offset = data_end_offset;
-        } else if seg_offset == contiguous_end_offset {
             contiguous_end_offset = data_end_offset;
         }
 
-        // Record segment info
+        // Запись сегмента
         let status = if overlap_len > 0 {
             SegmentStatus::Overlap
         } else if seg_offset > contiguous_end_offset {
@@ -296,13 +283,18 @@ pub fn reassemble(input: ReassemblyInput) -> ReassembledStream {
         });
     }
 
-    known_data.sort_by_key(|(off, _)| *off);
-    let data: Vec<u8> = known_data.iter().map(|(_, b)| *b).collect();
+    // Собираем результат из written интервалов по порядку.
+    // Нулевые заполнители на местах gaps не попадают в результат.
+    let total_size: usize = written.iter().map(|&(s, e)| (e - s) as usize).sum();
+    let mut result_data: Vec<u8> = Vec::with_capacity(total_size);
+    for &(s, e) in &written {
+        result_data.extend_from_slice(&data[s as usize..e as usize]);
+    }
 
     byte_map.sort_by_key(|e| e.start);
 
     ReassembledStream {
-        data,
+        data: result_data,
         gaps,
         ambiguities,
         total_bytes: contiguous_end_offset,
@@ -311,4 +303,95 @@ pub fn reassemble(input: ReassemblyInput) -> ReassembledStream {
         segments: stream_segments,
         byte_map,
     }
+}
+
+// ---------------------------------------------------------------------------
+// Хелперы для работы с интервалами
+// ---------------------------------------------------------------------------
+
+/// Записывает байты в `data` по offset, обновляя интервалы `written`.
+/// Сливает перекрывающиеся и соседние интервалы.
+fn write_range(
+    data: &mut Vec<u8>,
+    written: &mut Vec<(u64, u64)>,
+    offset: u64,
+    bytes: &[u8],
+) {
+    if bytes.is_empty() {
+        return;
+    }
+    let end = offset + bytes.len() as u64;
+    if data.len() < end as usize {
+        data.resize(end as usize, 0);
+    }
+    data[offset as usize..end as usize].copy_from_slice(bytes);
+
+    if written.is_empty() {
+        written.push((offset, end));
+        return;
+    }
+
+    // Найти первый интервал, который начинается после offset
+    let mut i = 0;
+    while i < written.len() && written[i].0 <= offset {
+        i += 1;
+    }
+
+    let mut new_start = offset;
+    let mut new_end = end;
+    let mut from = i;
+
+    // Слить с предыдущим
+    if i > 0 {
+        let (s, e) = written[i - 1];
+        if e >= offset {
+            new_start = s;
+            if e > new_end {
+                new_end = e;
+            }
+            from = i - 1;
+        }
+    }
+
+    // Слить со следующими
+    let mut to = i;
+    while to < written.len() && written[to].0 <= new_end {
+        if written[to].1 > new_end {
+            new_end = written[to].1;
+        }
+        to += 1;
+    }
+
+    written.splice(from..to, [(new_start, new_end)]);
+}
+
+/// Читает `len` байт по offset, используя интервалы `written`.
+/// Байты вне интервалов (в gaps) остаются нулями — это внутренняя
+/// операция сравнения перекрытий, а не вывод результата.
+fn read_range(
+    data: &[u8],
+    written: &[(u64, u64)],
+    offset: u64,
+    len: u64,
+) -> Vec<u8> {
+    let end = offset + len;
+    let mut out = vec![0u8; len as usize];
+    for &(s, e) in written {
+        if e <= offset {
+            continue;
+        }
+        if s >= end {
+            break;
+        }
+        let rs = s.max(offset);
+        let re = e.min(end);
+        let dst_start = (rs - offset) as usize;
+        let dst_end = (re - offset) as usize;
+        let src_start = rs as usize;
+        let src_end = re as usize;
+        if src_end <= data.len() {
+            out[dst_start..dst_end].copy_from_slice(&data[src_start..src_end]);
+        }
+    }
+    out
 }

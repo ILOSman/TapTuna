@@ -224,3 +224,13 @@ table tr:hover td { background: #fbfbfd; }
 .hex-vscroll .byte.hit { background: #b3e5fc; outline: 1px solid #0288d1; }
 .hex-vscroll .ascii { color: var(--muted); }
 .hex-vscroll .hex-spacer { width: 1px; }
+
+.hex-vscroll .byte.flash {
+  background: #ffe066;
+  outline: 2px solid #f59f00;
+  animation: byte-flash 2s ease-out;
+}
+@keyframes byte-flash {
+  0%   { background: #ffe066; }
+  100% { background: #ffe066; }
+}

@@ -158,7 +158,10 @@
           } else {
             const h = b.toString(16).padStart(2, "0");
             const kind = this.markAt(abs);
-            const cls = "byte" + (kind ? " " + kind : "");
+            const classes = ["byte"];
+            if (kind) classes.push(kind);
+            if (this.flashOffset === abs) classes.push("flash");
+            const cls = classes.join(" ");
             hexPart += '<span class="' + cls + '" data-off="' + abs + '">' + h + "</span> ";
             const ch = b >= 32 && b < 127 ? String.fromCharCode(b) : ".";
             asciiPart += window.taptuna.escapeHtml(ch);
@@ -186,9 +189,33 @@
     }
 
     /** Прокрутка к offset (для jump-to-offset). */
+    /** Прокрутка к offset с визуальной подсветкой байта. */
     jumpTo(absOffset) {
+      if (absOffset < 0) absOffset = 0;
+      if (absOffset >= this.size && this.size > 0) absOffset = this.size - 1;
+
+      // Прокручиваем так, чтобы целевая строка была в середине окна
       const line = Math.floor(absOffset / BYTES_PER_LINE);
-      this.root.scrollTop = line * LINE_HEIGHT;
+      const viewportLines = Math.floor((this.root.clientHeight || 600) / LINE_HEIGHT);
+      const targetScroll = Math.max(0, (line - Math.floor(viewportLines / 2)) * LINE_HEIGHT);
+      this.root.scrollTop = targetScroll;
+
+      // Событие scroll может прийти асинхронно; синхронизируем состояние вручную.
+      this.firstRendered = -1;
+      this.lastRendered = -1;
+      this.onScroll();
+
+      // Визуальная подсветка целевого байта — снимаем старую, ставим новую.
+      this.flashOffset = absOffset;
+      this.render();
+      clearTimeout(this._flashTimer);
+      this._flashTimer = setTimeout(() => {
+        this.flashOffset = null;
+        this.render();
+      }, 2000);
+
+      // Подгружаем чанк, если его ещё нет.
+      this.ensureChunks(line, line + viewportLines);
     }
 
     /** Обновление marks без перезагрузки. */

@@ -44,15 +44,28 @@
     </tbody>
   </table>
   {% else %}
-  <p class="muted">Журналов нет.</p>
+  <p class="muted">Журналов нет. Импортируйте CSV или YAML выше.</p>
   {% endif %}
 </section>
 
 <section class="card" id="entries-card" hidden>
-  <h2>Записи журнала #<span id="entries-log-id"></span></h2>
-  <div class="row" style="margin-bottom:0.5rem">
-    <input type="text" id="entries-filter" placeholder="Поиск по action / params" style="width:250px">
+  <div class="row">
+    <h2 style="margin:0">Записи журнала #<span id="entries-log-id"></span></h2>
+    <span class="spacer"></span>
+    <label class="row small">
+      <input type="checkbox" id="entries-with-sessions" checked>
+      Связать с сессиями
+    </label>
+    <label class="row small">
+      window (с):
+      <input type="number" id="entries-window" value="2.0" step="0.1" min="0" style="width:70px">
+    </label>
+    <button id="entries-reload">Перезагрузить</button>
+  </div>
+  <div class="row" style="margin-top:0.4rem">
+    <input type="text" id="entries-filter" placeholder="Поиск по action / params / result" style="width:300px">
     <span id="entries-count" class="muted small"></span>
+    <span id="entries-limit-note" class="muted small"></span>
   </div>
   <div id="entries-table">—</div>
 </section>
@@ -66,14 +79,21 @@
   const logPath = document.getElementById("log-path");
   const logNoCopy = document.getElementById("log-no-copy");
   const logAdd = document.getElementById("log-add");
+
   const entriesCard = document.getElementById("entries-card");
   const entriesLogId = document.getElementById("entries-log-id");
+  const entriesWithSessions = document.getElementById("entries-with-sessions");
+  const entriesWindow = document.getElementById("entries-window");
+  const entriesReload = document.getElementById("entries-reload");
   const entriesFilter = document.getElementById("entries-filter");
   const entriesCount = document.getElementById("entries-count");
+  const entriesLimitNote = document.getElementById("entries-limit-note");
   const entriesTable = document.getElementById("entries-table");
 
-  const dataByLog = {{ entries | tojson }};
+  let currentLogId = null;
+  let currentEntries = [];
 
+  // --- Импорт журнала ---
   logAdd.addEventListener("click", async () => {
     const path = logPath.value.trim();
     if (!path) { window.taptuna.toast("Укажите путь", "err"); return; }
@@ -92,18 +112,50 @@
     }
   });
 
-  let currentEntries = [];
+  // --- Открытие журнала ---
   document.querySelectorAll(".entries-btn").forEach((btn) => {
     btn.addEventListener("click", () => {
-      const id = btn.dataset.log;
-      currentEntries = dataByLog[id] || [];
-      entriesLogId.textContent = id;
+      currentLogId = parseInt(btn.dataset.log, 10);
+      entriesLogId.textContent = currentLogId;
       entriesCard.hidden = false;
       entriesCard.scrollIntoView({behavior: "smooth"});
-      renderEntries();
+      loadEntries();
     });
   });
 
+  entriesReload.addEventListener("click", loadEntries);
+  entriesWithSessions.addEventListener("change", loadEntries);
+  entriesWindow.addEventListener("change", loadEntries);
+
+  // --- Загрузка ---
+  async function loadEntries() {
+    if (!currentLogId) return;
+    entriesTable.textContent = "загрузка...";
+    entriesLimitNote.textContent = "";
+
+    const withSessions = entriesWithSessions.checked;
+    let win = parseFloat(entriesWindow.value);
+    if (!isFinite(win) || win < 0) win = 2.0;
+
+    const url = "/api/projects/{{ project_name }}/action_log/" + currentLogId +
+                "/entries?with_sessions=" + (withSessions ? "1" : "0") +
+                "&window=" + win +
+                "&limit=500";
+    try {
+      const d = await window.taptuna.api("GET", url);
+      currentEntries = d.entries || [];
+      if ((d.total || 0) > currentEntries.length) {
+        entriesLimitNote.textContent =
+          "(показаны первые " + currentEntries.length + " из " + d.total + ")";
+      }
+      renderEntries();
+    } catch (e) {
+      entriesTable.innerHTML = '<p class="muted">Ошибка: ' +
+        window.taptuna.escapeHtml(e.message) + '</p>';
+    }
+  }
+
+  // --- Рендер ---
   function renderEntries() {
     const q = (entriesFilter.value || "").toLowerCase();
     const filtered = currentEntries.filter((e) => {
@@ -111,21 +163,47 @@
       return JSON.stringify(e).toLowerCase().includes(q);
     });
     entriesCount.textContent = filtered.length + " / " + currentEntries.length;
+
     if (!filtered.length) {
       entriesTable.innerHTML = '<p class="muted">Нет записей.</p>';
       return;
     }
+
+    const withSessions = entriesWithSessions.checked;
+
     let html = '<table><thead><tr>' +
-      '<th>ts</th><th>Action</th><th>Params</th><th>Result</th>' +
+      '<th style="width:150px">ts</th>' +
+      '<th style="width:180px">Action</th>' +
+      '<th>Params</th>' +
+      '<th>Result</th>' +
+      (withSessions ? '<th style="width:200px">Сессии</th>' : '') +
       '</tr></thead><tbody>';
+
     for (const e of filtered) {
       const ts = window.taptuna.formatTime(e.ts);
+      const params = JSON.stringify(e.params || {});
+      const result = JSON.stringify(e.result || {});
       html += '<tr>' +
         '<td class="mono small">' + ts + '</td>' +
         '<td><strong>' + window.taptuna.escapeHtml(e.action) + '</strong></td>' +
-        '<td class="mono small">' + window.taptuna.escapeHtml(JSON.stringify(e.params || {})) + '</td>' +
-        '<td class="mono small">' + window.taptuna.escapeHtml(JSON.stringify(e.result || {})) + '</td>' +
-        '</tr>';
+        '<td class="mono small">' + window.taptuna.escapeHtml(params) + '</td>' +
+        '<td class="mono small">' + window.taptuna.escapeHtml(result) + '</td>';
+
+      if (withSessions) {
+        const sess = e.sessions || [];
+        if (!sess.length) {
+          html += '<td class="muted small">—</td>';
+        } else {
+          const links = sess.slice(0, 5).map((s) =>
+            '<a href="/sessions/' + s.id + '" class="mono small">#' + s.id + '</a>'
+          ).join(", ");
+          const more = sess.length > 5
+            ? ' <span class="muted small">+' + (sess.length - 5) + '</span>'
+            : '';
+          html += '<td>' + links + more + '</td>';
+        }
+      }
+      html += '</tr>';
     }
     html += '</tbody></table>';
     entriesTable.innerHTML = html;

@@ -19,9 +19,18 @@ once_cell = "1"
 [dev-dependencies]
 proptest = "1"
 criterion = { version = "0.5", features = ["html_reports"] }
+dhat = "0.3"
 
 [[bench]]
 name = "ingest"
+harness = false
+
+[[bench]]
+name = "memory"
+harness = false
+
+[[bench]]
+name = "memory_sessions"
 harness = false
 
 [lints.rust]

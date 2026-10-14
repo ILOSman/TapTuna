@@ -183,7 +183,10 @@
         a.addEventListener("click", (e) => {
           e.preventDefault();
           const off = parseInt(a.dataset.off, 10);
-          if (viewer) viewer.jumpTo(off);
+          if (viewer) {
+            viewer.jumpTo(off);
+            window.taptuna.toast("переход к offset " + off);
+          }
         });
       });
     } catch (e) {

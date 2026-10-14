@@ -347,6 +347,79 @@ def api_get_session(session_id: int):
     finally:
         conn.close()
 
+@bp.route("/sessions/<int:session_id>/framing-preview", methods=["POST"])
+def api_framing_preview(session_id: int):
+    """Применяет framing-стратегию к потоку сессии и возвращает границы сообщений.
+
+    Тело: {"project_id": "...", "direction": "a_to_b", "framing": {...}}
+    Ответ: {"messages": [{"index", "offset", "length", "hex_head"}],
+             "total_bytes", "framing_error"}
+    """
+    body = _body()
+    project_id = body.get("project_id")
+    direction = body.get("direction", "a_to_b")
+    framing = body.get("framing") or {}
+
+    if not project_id:
+        return _error("MISSING_PROJECT", "'project_id' required")
+    if direction not in ("a_to_b", "b_to_a"):
+        return _error("BAD_DIRECTION", "direction must be a_to_b or b_to_a")
+
+    p = _get_project(project_id)
+    conn = open_db(p)
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT * FROM directions WHERE session_id = ? AND direction = ?",
+            (session_id, direction),
+        )
+        drow = cur.fetchone()
+        if drow is None:
+            return _error("DIRECTION_NOT_FOUND", "direction not found", 404)
+        drow = dict(drow)
+    finally:
+        conn.close()
+
+    # Загружаем поток
+    from .verification import _load_stream
+    stream = _load_stream(p, drow)
+    if not stream:
+        return _ok({"messages": [], "total_bytes": 0, "framing_error": None})
+
+    # Применяем framing
+    from . import native as _nat
+    if not _nat.HAS_NATIVE or _nat._native is None:
+        return _error("NO_NATIVE", "framing требует native core", 503)
+
+    try:
+        out = _nat._native.framing.frame_stream(stream, framing)
+    except Exception as e:
+        return _ok({
+            "messages": [],
+            "total_bytes": len(stream),
+            "framing_error": str(e),
+            "framing_error_type": type(e).__name__,
+        })
+
+    messages = []
+    for idx, m in enumerate(out["messages"]):
+        # PyO3 отдаёт Vec<u8> как list[int]; приводим к bytes
+        raw = bytes(m["bytes"]) if not isinstance(m["bytes"], (bytes, bytearray)) else m["bytes"]
+        head = raw[:32].hex()
+        messages.append({
+            "index": idx,
+            "offset": m["offset"],
+            "length": m["length"],
+            "hex_head": head,
+            "hex_head_len": min(32, len(raw)),
+        })
+
+    return _ok({
+        "messages": messages,
+        "total_bytes": len(stream),
+        "leftover_bytes": len(out.get("leftover", b"")),
+        "framing_error": None,
+    })
 
 @bp.route("/sessions/<int:session_id>/stream/<direction>", methods=["GET"])
 def api_get_stream(session_id: int, direction: str):
@@ -918,6 +991,42 @@ def api_import_action_log(project_id: str):
     except ProtocolLabError as e:
         return _error(e.code, e.message, getattr(e, "http_status", 400), e.details)
 
+@bp.route("/projects/<project_id>/action_log/<int:log_id>/entries", methods=["GET"])
+def api_action_log_entries(project_id: str, log_id: int):
+    """Возвращает записи журнала.
+
+    Query params:
+        with_sessions=1 — обогатить каждую запись списком сессий,
+                          активных в момент действия (± window секунд).
+        window=0.5      — допуск в секундах (по умолчанию 0.5).
+        limit=500       — максимум записей (по умолчанию 500).
+    """
+    from .action_log import get_action_entries, annotate_actions_with_sessions
+
+    p = _get_project(project_id)
+    with_sessions = request.args.get("with_sessions", "0") in ("1", "true", "yes")
+    window = float(request.args.get("window", "0.5"))
+    limit = int(request.args.get("limit", "500"))
+
+    try:
+        entries = get_action_entries(p, log_id)
+    except Exception as e:
+        return _error("ENTRIES_LOAD_FAILED", str(e), 404)
+
+    if not entries:
+        return _ok({"entries": [], "total": 0})
+
+    total = len(entries)
+    entries = entries[:limit]
+
+    if with_sessions:
+        conn = open_db(p)
+        try:
+            entries = annotate_actions_with_sessions(conn, entries, window=window)
+        finally:
+            conn.close()
+
+    return _ok({"entries": entries, "total": total, "window": window})
 
 # --- Reports ---
 

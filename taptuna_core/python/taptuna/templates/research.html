@@ -22,13 +22,107 @@
 
 <section class="card" id="search-card" hidden>
   <div class="row">
-    <label>Поиск:</label>
-    <input type="text" id="search-text" placeholder="hex: 48656c6c6f  |  regex: Hello.+" style="width:300px">
+    <h2 style="margin:0">Поиск</h2>
+    <input type="text" id="search-text"
+           placeholder="hex: 48656c6c6f  |  regex: Hello.+  |  текст: GET"
+           style="flex:1; min-width:200px">
     <label class="row small">
       <input type="checkbox" id="search-regex"> Regex
     </label>
-    <button id="search-btn">Найти</button>
+    <button id="search-btn" class="primary">Найти</button>
     <span id="search-info" class="muted small"></span>
+  </div>
+</section>
+
+<section class="card" id="compare-card" hidden>
+  <div class="row">
+    <h2 style="margin:0">Сравнить с другой сессией</h2>
+    <span class="spacer"></span>
+    <label class="row small">
+      <input type="checkbox" id="compare-align"> Синхронизировать скролл
+    </label>
+    <button id="compare-btn" class="primary">Сравнить</button>
+  </div>
+  <div class="row" style="margin-top:0.5rem">
+    <label>Сессия:</label>
+    <select id="compare-select" style="min-width:350px">
+      <option value="">— выберите —</option>
+      {% for s in sessions %}
+      <option value="{{ s.id }}">
+        #{{ s.id }}  {{ s.ip_src }}:{{ s.port_src }} ↔ {{ s.ip_dst }}:{{ s.port_dst }}
+      </option>
+      {% endfor %}
+    </select>
+    <span id="compare-meta" class="muted small"></span>
+  </div>
+</section>
+
+<section class="row" id="compare-row" hidden style="gap:1rem; align-items:flex-start">
+  <div class="card" style="flex:1; min-width:0">
+    <div class="row">
+      <h2 style="margin:0" id="cmp-left-title">Сессия A</h2>
+      <span class="spacer"></span>
+      <span class="muted small" id="cmp-left-size">—</span>
+    </div>
+    <div id="cmp-hex-left" style="height:500px"></div>
+  </div>
+  <div class="card" style="flex:1; min-width:0">
+    <div class="row">
+      <h2 style="margin:0" id="cmp-right-title">Сессия B</h2>
+      <span class="spacer"></span>
+      <span class="muted small" id="cmp-right-size">—</span>
+    </div>
+    <div id="cmp-hex-right" style="height:500px"></div>
+  </div>
+</section>
+
+<section class="card" id="compare-summary" hidden>
+  <h2>Сводка сравнения</h2>
+  <div id="compare-summary-body">—</div>
+</section>
+
+<section class="card" id="framing-card" hidden>
+  <div class="row">
+    <h2 style="margin:0">Framing tool</h2>
+    <span class="spacer"></span>
+    <button id="framing-apply" class="primary">Применить</button>
+  </div>
+  <div class="row" style="margin-top:0.5rem; gap:0.6rem">
+    <label>Стратегия:</label>
+    <select id="framing-kind">
+      <option value="length_prefix">length_prefix</option>
+      <option value="delimiter">delimiter</option>
+      <option value="fixed">fixed</option>
+      <option value="regex">regex</option>
+    </select>
+
+    <span class="framing-params" data-kind="length_prefix">
+      <label>prefix_bytes: <input type="number" id="fp-prefix" value="2" style="width:60px"></label>
+      <label>big_endian: <input type="checkbox" id="fp-be" checked></label>
+      <label>includes_prefix: <input type="checkbox" id="fp-inc"></label>
+    </span>
+
+    <span class="framing-params" data-kind="delimiter" hidden>
+      <label>delim (hex): <input type="text" id="fd-delim" value="0d0a" style="width:120px"></label>
+      <label>include: <input type="checkbox" id="fd-inc" checked></label>
+    </span>
+
+    <span class="framing-params" data-kind="fixed" hidden>
+      <label>size: <input type="number" id="ff-size" value="16" style="width:70px"></label>
+    </span>
+
+    <span class="framing-params" data-kind="regex" hidden>
+      <label>pattern: <input type="text" id="fr-pat" value="[^\n]*\n" style="width:200px"></label>
+      <label>include: <input type="checkbox" id="fr-inc" checked></label>
+    </span>
+
+    <span class="framing-params">
+      <label>max_message: <input type="number" id="fm-max" value="65536" style="width:90px"></label>
+    </span>
+  </div>
+
+  <div id="framing-result" style="margin-top:0.6rem">
+    <p class="muted small">Выберите сессию выше, затем нажмите «Применить».</p>
   </div>
 </section>
 
@@ -56,28 +150,118 @@
 {% block scripts %}
 <script>
 (function () {
+  "use strict";
+
+  // ============================================================
+  // DOM-ссылки (все в одном месте)
+  // ============================================================
   const sel = document.getElementById("session-select");
   const loadBtn = document.getElementById("load-btn");
+
   const searchCard = document.getElementById("search-card");
   const searchText = document.getElementById("search-text");
   const searchRegex = document.getElementById("search-regex");
   const searchBtn = document.getElementById("search-btn");
   const searchInfo = document.getElementById("search-info");
+
+  const framingCard = document.getElementById("framing-card");
+  const framingKind = document.getElementById("framing-kind");
+  const framingApply = document.getElementById("framing-apply");
+  const framingResult = document.getElementById("framing-result");
+
   const streamsRow = document.getElementById("streams-row");
 
-  let current = null;   // {sessionId, dirs, viewers: {a_to_b, b_to_a}}
+  const compareCard = document.getElementById("compare-card");
+  const compareSelect = document.getElementById("compare-select");
+  const compareBtn = document.getElementById("compare-btn");
+  const compareAlign = document.getElementById("compare-align");
+  const compareRow = document.getElementById("compare-row");
+  const compareSummary = document.getElementById("compare-summary");
+  const compareSummaryBody = document.getElementById("compare-summary-body");
+  const cmpLeftTitle = document.getElementById("cmp-left-title");
+  const cmpRightTitle = document.getElementById("cmp-right-title");
+  const cmpLeftSize = document.getElementById("cmp-left-size");
+  const cmpRightSize = document.getElementById("cmp-right-size");
+
+  // ============================================================
+  // Состояние
+  // ============================================================
+  let current = null;              // {sessionId, dirs, viewers}
+  let currentFramingResult = null;
+  let compareState = null;         // {leftViewer, rightViewer, ...}
+  const FRAMING_PAGE = 200;
+
+  // ============================================================
+  // Утилиты
+  // ============================================================
+  function buildGapMarks(dir) {
+    if (!dir) return [];
+    const marks = [];
+    for (const g of (dir.gaps || [])) {
+      marks.push({ start: g.offset, end: g.offset + g.length, kind: "gap" });
+    }
+    for (const a of (dir.ambiguities || [])) {
+      marks.push({ start: a.offset, end: a.offset + a.length, kind: "amb" });
+    }
+    return marks;
+  }
+
+  function resetAllPanels() {
+    // Framing
+    framingResult.innerHTML =
+      '<p class="muted small">Нажмите «Применить», чтобы разбить поток.</p>';
+    currentFramingResult = null;
+
+    // Поиск
+    searchInfo.textContent = "";
+    searchText.value = "";
+
+    // Сравнение
+    compareRow.hidden = true;
+    compareSummary.hidden = true;
+    compareSummaryBody.innerHTML = "—";
+    compareSelect.value = "";
+    compareState = null;
+
+    // Возвращаем основной вид (если был скрыт из-за сравнения)
+    streamsRow.hidden = false;
+  }
+
+  // ============================================================
+  // Загрузка сессии
+  // ============================================================
+  let loadSessionToken = 0;
 
   async function loadSession() {
     const id = sel.value;
-    if (!id) return;
+    if (!id) {
+      window.taptuna.toast("Выберите сессию", "err");
+      return;
+    }
+
+    // Инкремент токена: если пользователь переключит селект до завершения
+    // текущего запроса, старый ответ будет проигнорирован.
+    const token = ++loadSessionToken;
+
+    resetAllPanels();
     streamsRow.hidden = false;
     searchCard.hidden = false;
+    framingCard.hidden = false;
+    compareCard.hidden = false;
 
-    const meta = await window.taptuna.api("GET",
-      "/api/sessions/" + id + "?project_id={{ project_name }}");
+    let meta;
+    try {
+      meta = await window.taptuna.api("GET",
+        "/api/sessions/" + id + "?project_id={{ project_name }}");
+    } catch (e) {
+      if (token !== loadSessionToken) return;
+      window.taptuna.toast("Ошибка загрузки: " + e.message, "err");
+      return;
+    }
+    if (token !== loadSessionToken) return;  // устаревший ответ
+
     const dirs = {};
     for (const d of (meta.directions || [])) dirs[d.direction] = d;
-
     current = { sessionId: id, dirs, viewers: {} };
 
     for (const dir of ["a_to_b", "b_to_a"]) {
@@ -91,27 +275,43 @@
         continue;
       }
       if (d.reassembled_bytes === 0) {
-        el.innerHTML =
-          '<p class="muted" style="padding:1rem">Поток пуст (нет payload).</p>';
+        el.innerHTML = '<p class="muted" style="padding:1rem">Поток пуст (нет payload).</p>';
         sizeEl.textContent = "0 байт";
         continue;
       }
       sizeEl.textContent = d.reassembled_bytes + " байт";
-      const marks = [];
-      for (const g of (d.gaps || [])) marks.push({start: g.offset, end: g.offset + g.length, kind: "gap"});
-      for (const a of (d.ambiguities || [])) marks.push({start: a.offset, end: a.offset + a.length, kind: "amb"});
-
-      const viewer = new window.taptuna.HexViewer(el, {
+      current.viewers[dir] = new window.taptuna.HexViewer(el, {
         sessionId: id,
         direction: dir,
         projectId: "{{ project_name }}",
         size: d.reassembled_bytes,
-        marks: marks,
+        marks: buildGapMarks(d),
       });
-      current.viewers[dir] = viewer;
     }
+
+    if (token !== loadSessionToken) return;
+    populateCompareSelect(id);
   }
 
+  function populateCompareSelect(currentId) {
+    // Очищаем всё, кроме placeholder
+    while (compareSelect.options.length > 1) compareSelect.remove(1);
+
+    // Источник данных — оригинальный селект с сессиями
+    for (const opt of sel.options) {
+      if (!opt.value) continue;
+      if (String(opt.value) === String(currentId)) continue;
+      const newOpt = document.createElement("option");
+      newOpt.value = opt.value;
+      newOpt.textContent = opt.textContent.trim();
+      compareSelect.appendChild(newOpt);
+    }
+    compareSelect.disabled = compareSelect.options.length <= 1;
+  }
+
+  // ============================================================
+  // Поиск
+  // ============================================================
   async function search() {
     if (!current) return;
     const query = searchText.value.trim();
@@ -134,10 +334,9 @@
     for (const dir of ["a_to_b", "b_to_a"]) {
       const viewer = current.viewers[dir];
       if (!viewer) continue;
-      // Загружаем весь поток целиком в память (только для поиска).
-      // Для очень больших потоков можно ограничить.
       const size = viewer.size;
       if (size === 0) continue;
+
       let data;
       try {
         const r = await fetch(
@@ -179,9 +378,378 @@
     searchInfo.textContent = "найдено: " + total;
   }
 
+  // ============================================================
+  // Framing tool
+  // ============================================================
+  framingKind.addEventListener("change", () => {
+    document.querySelectorAll(".framing-params[data-kind]").forEach((el) => {
+      el.hidden = el.dataset.kind !== framingKind.value;
+    });
+  });
+
+  function buildFramingSpec() {
+    const kind = framingKind.value;
+    const max_message = parseInt(document.getElementById("fm-max").value || "65536", 10);
+    if (kind === "length_prefix") {
+      return {
+        kind,
+        prefix_bytes: parseInt(document.getElementById("fp-prefix").value || "2", 10),
+        big_endian: document.getElementById("fp-be").checked,
+        length_includes_prefix: document.getElementById("fp-inc").checked,
+        max_message,
+      };
+    }
+    if (kind === "delimiter") {
+      const hex = (document.getElementById("fd-delim").value || "").replace(/\s/g, "");
+      const bytes = [];
+      for (let i = 0; i < hex.length; i += 2) bytes.push(parseInt(hex.slice(i, i + 2), 16));
+      return {
+        kind, delim: bytes,
+        include_delim: document.getElementById("fd-inc").checked,
+        max_message,
+      };
+    }
+    if (kind === "fixed") {
+      return {
+        kind,
+        size: parseInt(document.getElementById("ff-size").value || "16", 10),
+        max_message,
+      };
+    }
+    if (kind === "regex") {
+      return {
+        kind,
+        pattern: document.getElementById("fr-pat").value || "",
+        include_match: document.getElementById("fr-inc").checked,
+        max_message,
+      };
+    }
+    return { kind, max_message };
+  }
+
+  async function applyFraming() {
+    if (!current) { window.taptuna.toast("Сначала выберите сессию", "err"); return; }
+    framingResult.innerHTML = '<p class="muted small">Применение...</p>';
+    try {
+      const r = await window.taptuna.api("POST",
+        "/api/sessions/" + current.sessionId + "/framing-preview",
+        { project_id: "{{ project_name }}", direction: "a_to_b", framing: buildFramingSpec() });
+      renderFramingResult(r);
+    } catch (e) {
+      framingResult.innerHTML = '<p class="muted">Ошибка: ' +
+        window.taptuna.escapeHtml(e.message) + '</p>';
+    }
+  }
+
+  function renderFramingResult(r) {
+    currentFramingResult = r;
+    renderFramingTable(FRAMING_PAGE);
+  }
+
+  function renderFramingTable(limit) {
+    const r = currentFramingResult;
+    if (!r) return;
+
+    if (r.framing_error) {
+      framingResult.innerHTML = '<p style="color:#c53030">Framing error: ' +
+        window.taptuna.escapeHtml(r.framing_error) + '</p>';
+      return;
+    }
+
+    const msgs = r.messages || [];
+    const leftover = r.leftover_bytes || 0;
+    const total = r.total_bytes || 0;
+    const head = msgs.slice(0, limit);
+
+    let html = '<div class="row small" style="margin-bottom:0.4rem; gap:1rem">' +
+      '<span><strong>Сообщений:</strong> ' + msgs.length + '</span>' +
+      '<span><strong>Поток:</strong> ' + total + ' байт</span>' +
+      '<span' + (leftover > 0 ? ' style="color:#b7791f"' : '') + '>' +
+        '<strong>Leftover:</strong> ' + leftover + ' байт' +
+        (leftover > 0 ? ' (не входит в сообщения)' : '') +
+      '</span>' +
+      '<span class="spacer"></span>' +
+      '<button id="framing-export">Экспорт JSON</button>' +
+      (limit < msgs.length
+        ? '<button id="framing-show-all">Показать все ' + msgs.length + '</button>'
+        : '') +
+      '</div>';
+
+    if (!msgs.length && leftover === 0) {
+      framingResult.innerHTML = html + '<p class="muted">Ни одного сообщения не найдено.</p>';
+      bindFramingActions();
+      return;
+    }
+
+    html += '<table><thead><tr>' +
+      '<th>#</th><th>offset</th><th>length</th><th>hex (первые 32Б)</th><th></th>' +
+      '</tr></thead><tbody>';
+    for (const m of head) {
+      html += '<tr>' +
+        '<td>' + m.index + '</td>' +
+        '<td class="mono">' + m.offset + '</td>' +
+        '<td>' + m.length + '</td>' +
+        '<td class="mono small">' + window.taptuna.escapeHtml(m.hex_head) +
+          (m.length > 32 ? "…" : "") + '</td>' +
+        '<td><a href="#" class="framing-jump" data-off="' + m.offset + '">к байтам</a></td>' +
+        '</tr>';
+    }
+    html += '</tbody></table>';
+
+    if (limit < msgs.length) {
+      html += '<p class="muted small">Показаны первые ' + limit + ' из ' + msgs.length + '.</p>';
+    }
+    if (leftover > 0) {
+      html += '<p class="muted small" style="margin-top:0.4rem">' +
+        'Хвост ' + leftover + ' байт не образует сообщения. ' +
+        '<a href="#" class="framing-jump" data-off="' + (total - leftover) + '">перейти к хвосту</a>' +
+        '</p>';
+    }
+    framingResult.innerHTML = html;
+    bindFramingActions();
+  }
+
+  function bindFramingActions() {
+    framingResult.querySelectorAll(".framing-jump").forEach((a) => {
+      a.addEventListener("click", (e) => {
+        e.preventDefault();
+        const off = parseInt(a.dataset.off, 10);
+        const viewer = current.viewers["a_to_b"];
+        if (viewer) {
+          viewer.jumpTo(off);
+          window.taptuna.toast("переход к offset " + off);
+        }
+      });
+    });
+    const showAllBtn = document.getElementById("framing-show-all");
+    if (showAllBtn) {
+      showAllBtn.addEventListener("click", () => {
+        if (!currentFramingResult) return;
+        const n = (currentFramingResult.messages || []).length;
+        if (n > 5000 && !window.confirm("Показать " + n + " сообщений? Это может подвесить браузер.")) return;
+        renderFramingTable(n);
+      });
+    }
+    const exportBtn = document.getElementById("framing-export");
+    if (exportBtn) exportBtn.addEventListener("click", exportFramingJson);
+  }
+
+  function exportFramingJson() {
+    const r = currentFramingResult;
+    if (!r) return;
+    const payload = {
+      session_id: current ? current.sessionId : null,
+      direction: "a_to_b",
+      framing: buildFramingSpec(),
+      total_bytes: r.total_bytes,
+      leftover_bytes: r.leftover_bytes,
+      message_count: (r.messages || []).length,
+      messages: r.messages || [],
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], {type: "application/json"});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+    a.href = url;
+    a.download = "framing_session" + payload.session_id + "_" + ts + ".json";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    window.taptuna.toast("Экспортировано " + payload.message_count + " сообщений");
+  }
+
+  // ============================================================
+  // Side-by-side сравнение
+  // ============================================================
+  async function fetchSessionStream(sessionId, direction) {
+    const meta = await window.taptuna.api("GET",
+      "/api/sessions/" + sessionId + "?project_id={{ project_name }}");
+    const dir = (meta.directions || []).find((d) => d.direction === direction);
+    if (!dir) return { meta, dir: null, data: null };
+    if (dir.reassembled_bytes === 0) return { meta, dir, data: new Uint8Array(0) };
+    const r = await fetch(
+      "/api/sessions/" + sessionId + "/stream/" + direction +
+      "/bytes?project_id={{ project_name }}&offset=0&length=" + dir.reassembled_bytes
+    );
+    return { meta, dir, data: new Uint8Array(await r.arrayBuffer()) };
+  }
+
+  async function runCompare() {
+    if (!current) { window.taptuna.toast("Сначала выберите сессию A", "err"); return; }
+    const otherId = compareSelect.value;
+    if (!otherId) { window.taptuna.toast("Выберите сессию B", "err"); return; }
+    if (String(otherId) === String(current.sessionId)) {
+      window.taptuna.toast("Нельзя сравнивать с самой собой", "err");
+      return;
+    }
+
+    // Прячем основной вид, чтобы не было 4 hex-viewer'ов
+    streamsRow.hidden = true;
+
+    compareRow.hidden = false;
+    compareSummary.hidden = false;
+    compareSummaryBody.textContent = "загрузка...";
+
+    let a, b;
+    try {
+      [a, b] = await Promise.all([
+        fetchSessionStream(current.sessionId, "a_to_b"),
+        fetchSessionStream(otherId, "a_to_b"),
+      ]);
+    } catch (e) {
+      compareSummaryBody.innerHTML = '<p class="muted">Ошибка: ' +
+        window.taptuna.escapeHtml(e.message) + '</p>';
+      return;
+    }
+
+    cmpLeftTitle.textContent = "Сессия #" + current.sessionId + " (a_to_b)";
+    cmpRightTitle.textContent = "Сессия #" + otherId + " (a_to_b)";
+    cmpLeftSize.textContent = (a.data ? a.data.length : 0) + " байт";
+    cmpRightSize.textContent = (b.data ? b.data.length : 0) + " байт";
+
+    const left = document.getElementById("cmp-hex-left");
+    const right = document.getElementById("cmp-hex-right");
+    left.innerHTML = "";
+    right.innerHTML = "";
+
+    const leftViewer = new window.taptuna.HexViewer(left, {
+      sessionId: current.sessionId, direction: "a_to_b",
+      projectId: "{{ project_name }}",
+      size: a.data ? a.data.length : 0, marks: buildGapMarks(a.dir),
+    });
+    const rightViewer = new window.taptuna.HexViewer(right, {
+      sessionId: otherId, direction: "a_to_b",
+      projectId: "{{ project_name }}",
+      size: b.data ? b.data.length : 0, marks: buildGapMarks(b.dir),
+    });
+
+    compareState = {
+      leftViewer, rightViewer,
+      leftData: a.data, rightData: b.data,
+      leftMeta: a.meta, rightMeta: b.meta,
+      leftDir: a.dir, rightDir: b.dir,
+      currentSessionId: current.sessionId, otherSessionId: otherId,
+    };
+
+    if (compareAlign.checked) {
+      let syncing = false;
+      const sync = (from, to) => {
+        from.root.addEventListener("scroll", () => {
+          if (syncing) return;
+          syncing = true;
+          to.root.scrollTop = from.root.scrollTop;
+          setTimeout(() => { syncing = false; }, 30);
+        });
+      };
+      sync(leftViewer, rightViewer);
+      sync(rightViewer, leftViewer);
+    }
+
+    renderCompareSummary();
+  }
+
+  function renderCompareSummary() {
+    if (!compareState) return;
+    const { leftMeta, rightMeta, leftDir, rightDir, leftData, rightData,
+            currentSessionId, otherSessionId } = compareState;
+
+    const a = leftMeta.session || {};
+    const b = rightMeta.session || {};
+    const aId = currentSessionId, bId = otherSessionId;
+    const diffs = [];
+
+    if (a.ip_src !== b.ip_src || a.port_src !== b.port_src ||
+        a.ip_dst !== b.ip_dst || a.port_dst !== b.port_dst) {
+      diffs.push("5-tuple различается");
+    }
+    const aLen = leftData ? leftData.length : 0;
+    const bLen = rightData ? rightData.length : 0;
+    if (aLen !== bLen) diffs.push("размер a_to_b: " + aLen + " vs " + bLen);
+
+    let commonPrefix = 0;
+    if (leftData && rightData) {
+      const minLen = Math.min(leftData.length, rightData.length);
+      while (commonPrefix < minLen && leftData[commonPrefix] === rightData[commonPrefix]) {
+        commonPrefix++;
+      }
+    }
+    let commonSuffix = 0;
+    if (leftData && rightData) {
+      const minLen = Math.min(leftData.length, rightData.length);
+      while (commonSuffix < minLen - commonPrefix &&
+             leftData[leftData.length - 1 - commonSuffix] ===
+             rightData[rightData.length - 1 - commonSuffix]) {
+        commonSuffix++;
+      }
+    }
+
+    let html = '<table><thead><tr><th></th>' +
+      '<th>A: #' + aId + '</th><th>B: #' + bId + '</th></tr></thead><tbody>';
+    html += '<tr><td>5-tuple</td>' +
+      '<td class="mono small">' + (a.ip_src || "?") + ':' + (a.port_src || "?") + ' → ' +
+      (a.ip_dst || "?") + ':' + (a.port_dst || "?") + '</td>' +
+      '<td class="mono small">' + (b.ip_src || "?") + ':' + (b.port_src || "?") + ' → ' +
+      (b.ip_dst || "?") + ':' + (b.port_dst || "?") + '</td></tr>';
+    html += '<tr><td>a_to_b, байт</td><td>' + aLen + '</td><td>' + bLen + '</td></tr>';
+    html += '<tr><td>gaps / ambiguities</td>' +
+      '<td>' + ((leftDir && leftDir.gaps ? leftDir.gaps.length : 0)) + ' / ' +
+      ((leftDir && leftDir.ambiguities ? leftDir.ambiguities.length : 0)) + '</td>' +
+      '<td>' + ((rightDir && rightDir.gaps ? rightDir.gaps.length : 0)) + ' / ' +
+      ((rightDir && rightDir.ambiguities ? rightDir.ambiguities.length : 0)) + '</td></tr>';
+    html += '<tr><td>общий префикс</td><td colspan="2">' + commonPrefix + ' байт</td></tr>';
+    html += '<tr><td>общий суффикс</td><td colspan="2">' + commonSuffix + ' байт</td></tr>';
+    html += '</tbody></table>';
+
+    if (commonPrefix > 0) {
+      html += '<p class="muted small">Первые ' + commonPrefix + ' байт совпадают. ' +
+        '<a href="#" id="cmp-jump-first-diff">Перейти к первому различию (offset ' +
+        commonPrefix + ')</a></p>';
+    }
+    if (diffs.length) {
+      html += '<p class="small"><strong>Различия:</strong></p><ul class="small">';
+      for (const d of diffs) html += '<li>' + window.taptuna.escapeHtml(d) + '</li>';
+      html += '</ul>';
+    } else {
+      html += '<p class="muted small">Структурные различия не обнаружены.</p>';
+    }
+
+    compareSummaryBody.innerHTML = html;
+    const jumpDiff = document.getElementById("cmp-jump-first-diff");
+    if (jumpDiff && compareState) {
+      jumpDiff.addEventListener("click", (e) => {
+        e.preventDefault();
+        compareState.leftViewer.jumpTo(commonPrefix);
+        compareState.rightViewer.jumpTo(commonPrefix);
+      });
+    }
+  }
+
+  // ============================================================
+  // Обработчики
+  // ============================================================
   loadBtn.addEventListener("click", loadSession);
+
+  // Подсказка при смене селекта без клика «Загрузить»
+  sel.addEventListener("change", () => {
+    if (!current) return;
+    if (String(sel.value) === String(current.sessionId)) return;
+
+    // Сбрасываем всё, что связано с предыдущей A
+    current = null;
+    resetAllPanels();
+    streamsRow.hidden = true;
+    searchCard.hidden = true;
+    framingCard.hidden = true;
+    compareCard.hidden = true;
+
+    window.taptuna.toast("Нажмите «Загрузить», чтобы открыть сессию #" + sel.value);
+  });
+
   searchBtn.addEventListener("click", search);
   searchText.addEventListener("keydown", (e) => { if (e.key === "Enter") search(); });
+  framingApply.addEventListener("click", applyFraming);
+  compareBtn.addEventListener("click", runCompare);
 })();
 </script>
 {% endblock %}
