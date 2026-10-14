@@ -110,7 +110,10 @@ jobs:
         shell: bash
         run: |
           python -m pip install --upgrade pip
-          python -m pip install dist/*.whl
+          # Не устанавливаем dist/*.whl напрямую: в dist/ лежат wheels
+          # для всех платформ, и pip откажется ставить чужую.
+          # --find-links заставляет pip выбрать подходящий под текущую ОС/Python.
+          python -m pip install --find-links=dist taptuna-core
           python -m pip install pytest flask markdown jinja2 pyyaml
           if [ "${{ matrix.python }}" != "3.14" ]; then
             python -m pip install scapy
