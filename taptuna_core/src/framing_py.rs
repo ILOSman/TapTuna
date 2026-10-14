@@ -1,5 +1,5 @@
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList};
+use pyo3::types::{PyBytes, PyDict, PyList};
 
 use crate::framing::{frame, FramingStrategy};
 use crate::safe_eval::Value;
@@ -103,13 +103,16 @@ fn frame_stream(
         let d = PyDict::new_bound(py);
         d.set_item("offset", m.offset)?;
         d.set_item("length", m.length)?;
-        d.set_item("bytes", m.bytes.clone())?;
+        // PyBytes вместо Vec<u8>: PyO3 конвертировал бы Vec<u8> в list[int]
+        // (по ~28 байт на элемент). PyBytes — это bytes, 1 байт на элемент.
+        // Экономия памяти при 100k сообщений — ~×20-30.
+        d.set_item("bytes", PyBytes::new_bound(py, &m.bytes))?;
         messages.append(d)?;
     }
 
     let result = PyDict::new_bound(py);
     result.set_item("messages", messages)?;
-    result.set_item("leftover", out.leftover)?;
+    result.set_item("leftover", PyBytes::new_bound(py, &out.leftover))?;
     result.set_item("leftover_offset", out.leftover_offset)?;
     Ok(result.into())
 }

@@ -154,8 +154,21 @@ Taptuna_my/
 ## Документация
 
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — подход, слои, форматы, зависимости, ограничения.
+- [`docs/METHODOLOGY.md`](docs/METHODOLOGY.md) — методология исследования: framing → гипотезы → интерпретация → верификация.
+- [`docs/DEMO.md`](docs/DEMO.md) — пошаговый сценарий демонстрации (15–20 мин).
 - [`docs/DoD.md`](docs/DoD.md) — результаты проверки требований и измерения ресурсов.
 - [`docs/REUSE.md`](docs/REUSE.md) — как применить сохранённую интерпретацию к новой записи.
+- [`docs/COMPARISON.md`](docs/COMPARISON.md) — обоснование стека (Rust + PyO3 + Flask + SQLite).
+- [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) — частые проблемы.
+- [`examples/README.md`](examples/README.md) — готовый демонстрационный проект.
+
+## Быстрая проверка
+
+```bash
+make demo              # сгенерировать готовый проект
+make test              # Rust + Python тесты
+make test-examples     # E2E на эталонном PCAP
+```
 
 ## Ограничения
 
