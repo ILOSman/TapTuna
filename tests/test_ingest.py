@@ -94,28 +94,50 @@ def test_group_by_stream_multiple():
 # ---------------------------------------------------------------------------
 
 def _make_fake_tshark(tmp_path: Path, lines: list[str]) -> tuple[Path, Path]:
-    """Возвращает (путь_к_скрипту, путь_к_счётчику).
+    """Создаёт исполняемый fake-tshark.
 
-    Счётчик инкрементится ТОЛЬКО при вызове с -r (ingest PCAP),
-    а не при 'tshark -v' (который дёргает create_manifest).
+    На POSIX — bash-скрипт. На Windows — .bat (CreateProcess не умеет
+    запускать .sh напрямую). В обоих случаях счётчик инкрементится
+    только при вызове с -r, чтобы не считать 'tshark -v'.
     """
-    script = tmp_path / "fake_tshark.sh"
     counter = tmp_path / "tshark_calls.txt"
-    body = (
-        "#!/bin/bash\n"
-        f'for arg in "$@"; do\n'
-        f'  if [ "$arg" = "-r" ]; then\n'
-        f'    echo x >> {counter}\n'
-        f'    break\n'
-        f'  fi\n'
-        f'done\n'
-        "cat <<'TSV_EOF'\n"
-        + "\n".join(lines) + "\n"
-        "TSV_EOF\n"
-        "exit 0\n"
-    )
-    script.write_text(body, encoding="utf-8")
-    script.chmod(script.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+
+    if os.name == "nt":
+        # Windows: .bat
+        script = tmp_path / "fake_tshark.bat"
+        body = "@echo off\r\n"
+        body += "set count_call=0\r\n"
+        body += ":loop\r\n"
+        body += "if \"%~1\"==\"\" goto done\r\n"
+        body += "if \"%~1\"==\"-r\" (echo x >> \"" + str(counter) + "\")\r\n"
+        body += "shift\r\n"
+        body += "goto loop\r\n"
+        body += ":done\r\n"
+        for line in lines:
+            # Экранируем ^ и & для .bat
+            safe = line.replace("^", "^^").replace("&", "^&")
+            body += "echo " + safe + "\r\n"
+        body += "exit /b 0\r\n"
+        script.write_text(body, encoding="ascii")
+    else:
+        # POSIX: bash
+        script = tmp_path / "fake_tshark.sh"
+        body = (
+            "#!/bin/bash\n"
+            f'for arg in "$@"; do\n'
+            f'  if [ "$arg" = "-r" ]; then\n'
+            f'    echo x >> {counter}\n'
+            f'    break\n'
+            f'  fi\n'
+            f'done\n'
+            "cat <<'TSV_EOF'\n"
+            + "\n".join(lines) + "\n"
+            "TSV_EOF\n"
+            "exit 0\n"
+        )
+        script.write_text(body, encoding="utf-8")
+        script.chmod(script.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+
     return script, counter
 
 

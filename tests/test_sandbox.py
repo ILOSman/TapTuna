@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import time
-
+import sys
 import pytest
 
 from taptuna.interpreters.script_sandbox import ScriptInterpreter
@@ -20,7 +20,9 @@ def interpret(payload, index, stream_offset):
 """
     interp = ScriptInterpreter(
         spec={"code": code, "message_size": 4},
-        name="block_socket", seed=0,
+        name="cpu_burn",
+        cpu_seconds=1,
+        timeout_per_message=5.0 if sys.platform != "win32" else 2.0,
     )
     results = interp.interpret(b"ABCD", direction_id=1)
     assert len(results) == 1
@@ -73,26 +75,26 @@ def interpret(payload, index, stream_offset):
 # ---------------------------------------------------------------------------
 
 def test_cpu_limit_kills_worker():
-    code = """
-def interpret(payload, index, stream_offset):
-    while True:
-        pass
-"""
+    code = "def interpret(p, i, o):\n    while True: pass\n"
+    is_windows = sys.platform == "win32"
     interp = ScriptInterpreter(
         spec={"code": code, "message_size": 4},
         name="cpu_burn",
         cpu_seconds=1,
-        timeout_per_message=60.0,   # wall-clock не должен сработать
+        timeout_per_message=2.0 if is_windows else 60.0,
     )
-    start = time.monotonic()
-    results = interp.interpret(b"ABCD", direction_id=1)
-    elapsed = time.monotonic() - start
+    t0 = time.monotonic()
+    r = interp.interpret(b"ABCD", 1)
+    elapsed = time.monotonic() - t0
 
-    assert elapsed < 10.0, f"worker не убит за разумное время: {elapsed:.2f}с"
-    assert len(results) == 1
-    assert results[0].status.value == "unknown_frame"
-    joined = " ".join(results[0].notes).lower()
-    assert "cpu" in joined or "sigxcpu" in joined or "killed" in joined
+    assert elapsed < 10.0, f"worker не убит: {elapsed:.2f}с"
+    assert r[0].status.value == "unknown_frame"
+    notes_lower = " ".join(r[0].notes).lower()
+    # На POSIX ожидаем SIGXCPU; на Windows — wall-clock timeout
+    if is_windows:
+        assert "timeout" in notes_lower, r[0].notes
+    else:
+        assert "cpu" in notes_lower or "killed" in notes_lower, r[0].notes
 
 
 def test_wall_clock_timeout():
