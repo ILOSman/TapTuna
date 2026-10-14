@@ -131,8 +131,10 @@ JSON-файлы `dhat-heap-<N>MiB.json` открываются в
 
 | Набор | Команда | Результат |
 |---|---|---|
-| Rust unit | `cargo test` | 18 passed |
-| Rust property | `cargo test` | включены в 18 |
+| Rust unit | `cargo test` (lib) | 18 passed |
+| Rust cross-check | `cargo test --test cross_check` | 1 passed |
+| Rust property | `cargo test --test property` | 4 passed |
+| Rust всего | `cargo test` | **23 passed** |
 | Rust bench | `cargo bench --no-run` | ✅ |
 | Python | `make test-python` | 36 passed |
 | Cross-validation | `pytest tests/test_cross_validation.py` | 4 passed |

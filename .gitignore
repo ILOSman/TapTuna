@@ -32,5 +32,6 @@ examples/demo_project/
 .DS_Store
 Thumbs.db
 
-ТЗ.md
 AGENTS.md
+check_ingest.sh
+config.py
