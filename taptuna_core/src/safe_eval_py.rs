@@ -10,7 +10,7 @@ pub fn create_module(py: Python<'_>) -> PyResult<Bound<'_, PyModule>> {
     Ok(m)
 }
 
-fn to_value(obj: &Bound<'_, PyAny>) -> PyResult<Value> {
+pub(crate) fn value_from_py(obj: &Bound<'_, PyAny>) -> PyResult<Value> {
     if let Ok(b) = obj.extract::<bool>() {
         return Ok(Value::Bool(b));
     }
@@ -53,16 +53,13 @@ fn parse_expr(obj: &Bound<'_, PyAny>) -> PyResult<Expr> {
         .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("missing 'op'"))?
         .extract()?;
 
-    let get = |k: &str| -> PyResult<Option<Bound<'_, PyAny>>> {
-        Ok(d.get_item(k)?.map(|v| v))
-    };
     let req = |k: &str| -> PyResult<Bound<'_, PyAny>> {
         d.get_item(k)?
             .ok_or_else(|| pyo3::exceptions::PyValueError::new_err(format!("missing '{}'", k)))
     };
 
     Ok(match op.as_str() {
-        "const" => Expr::Const(to_value(&req("value")?)?),
+        "const" => Expr::Const(value_from_py(&req("value")?)?),
         "field" => Expr::Field(req("name")?.extract()?),
         "add" => Expr::Add(
             Box::new(parse_expr(&req("a")?)?),
@@ -165,7 +162,7 @@ fn eval_expr(
     let e = parse_expr(expr)?;
     let mut ctx = EvalContext::new();
     for (k, v) in fields.iter() {
-        ctx.set(k.extract::<String>()?, to_value(&v)?);
+        ctx.set(k.extract::<String>()?, value_from_py(&v)?);
     }
     let v = eval(&e, &ctx).map_err(|err| {
         pyo3::exceptions::PyValueError::new_err(err.to_string())
@@ -180,7 +177,7 @@ fn eval_constraints_py(
 ) -> PyResult<bool> {
     let mut ctx = EvalContext::new();
     for (k, v) in fields.iter() {
-        ctx.set(k.extract::<String>()?, to_value(&v)?);
+        ctx.set(k.extract::<String>()?, value_from_py(&v)?);
     }
     let mut rust_exprs = Vec::with_capacity(exprs.len());
     for e in &exprs {

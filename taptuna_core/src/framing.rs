@@ -51,23 +51,10 @@ pub struct FramingOutput {
 pub enum FramingError {
     #[error("message exceeds max_message ({0})")]
     TooLarge(usize),
-    #[error("length prefix is truncated")]
-    PrefixTruncated,
     #[error("regex compile error: {0}")]
     RegexCompile(String),
     #[error("constraint expression error: {0}")]
     Constraint(String),
-}
-
-impl FramingStrategy {
-    pub fn max_message(&self) -> usize {
-        match self {
-            FramingStrategy::LengthPrefix { max_message, .. } => *max_message,
-            FramingStrategy::Delimiter { max_message, .. } => *max_message,
-            FramingStrategy::Fixed { max_message, .. } => *max_message,
-            FramingStrategy::Regex { max_message, .. } => *max_message,
-        }
-    }
 }
 
 pub fn frame(

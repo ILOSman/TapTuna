@@ -119,8 +119,9 @@ fn extract_fields(
     }
 
     let ms = MessageSpec { name, fields };
+    let spec_name = ms.name.clone();
     let out = extract(&ms, &bytes)
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("{}: {}", spec_name, e)))?;
 
     let d = PyDict::new_bound(py);
     for (k, v) in out {

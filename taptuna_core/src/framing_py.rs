@@ -2,10 +2,31 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 
 use crate::framing::{frame, FramingStrategy};
+use crate::safe_eval::Value;
+use crate::safe_eval_py::{parse_expr_pub, value_from_py};
+use std::collections::HashMap;
+
+#[pyfunction]
+fn check_constraints_py(
+    constraints: Vec<Bound<'_, PyAny>>,
+    fields: &Bound<'_, PyDict>,
+) -> PyResult<bool> {
+    let mut rust_fields: HashMap<String, Value> = HashMap::new();
+    for (k, v) in fields.iter() {
+        rust_fields.insert(k.extract::<String>()?, value_from_py(&v)?);
+    }
+    let mut exprs = Vec::with_capacity(constraints.len());
+    for c in &constraints {
+        exprs.push(parse_expr_pub(c)?);
+    }
+    crate::framing::check_constraints(&exprs, &rust_fields)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+}
 
 pub fn create_module(py: Python<'_>) -> PyResult<Bound<'_, PyModule>> {
     let m = PyModule::new_bound(py, "framing")?;
     m.add_function(wrap_pyfunction!(frame_stream, &m)?)?;
+    m.add_function(wrap_pyfunction!(check_constraints_py, &m)?)?;
     Ok(m)
 }
 
