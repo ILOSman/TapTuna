@@ -59,6 +59,18 @@ pub enum SegmentStatus {
     GapBefore,
 }
 
+/// Interval mapping a byte range in the reassembled stream to the frame
+/// that contributed it. Intervals are disjoint and sorted by `start`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ByteMapEntry {
+    /// Inclusive start offset in the reassembled stream.
+    pub start: u64,
+    /// Exclusive end offset in the reassembled stream.
+    pub end: u64,
+    /// Frame number that provided bytes in `[start, end)`.
+    pub frame: u32,
+}
+
 #[derive(Debug, Clone)]
 pub struct ReassembledStream {
     /// Reassembled bytes (only known data, no zero-fill for gaps).
@@ -76,7 +88,28 @@ pub struct ReassembledStream {
     /// Per-segment info for byte_map.
     pub segments: Vec<StreamSegmentInfo>,
     /// Mapping from stream offset to frame number (byte_map).
-    pub byte_map: Vec<(u64, u32)>,
+    pub byte_map: Vec<ByteMapEntry>,
+}
+
+impl ReassembledStream {
+    /// Find the frame that contributed the byte at `offset`, if known.
+    /// Returns `None` if the offset falls inside a gap or beyond the stream.
+    pub fn frame_at(&self, offset: u64) -> Option<u32> {
+        let mut lo = 0usize;
+        let mut hi = self.byte_map.len();
+        while lo < hi {
+            let mid = (lo + hi) / 2;
+            let e = self.byte_map[mid];
+            if offset < e.start {
+                hi = mid;
+            } else if offset >= e.end {
+                lo = mid + 1;
+            } else {
+                return Some(e.frame);
+            }
+        }
+        None
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -141,7 +174,7 @@ pub fn reassemble(input: ReassemblyInput) -> ReassembledStream {
     let mut gaps: Vec<Gap> = Vec::new();
     let mut ambiguities: Vec<Ambiguity> = Vec::new();
     let mut stream_segments: Vec<StreamSegmentInfo> = Vec::new();
-    let mut byte_map: Vec<(u64, u32)> = Vec::new();
+    let mut byte_map: Vec<ByteMapEntry> = Vec::new();
 
     let mut contiguous_end_offset: u64 = 0;
     let max_bytes = input.max_stream_bytes.unwrap_or(u64::MAX);
@@ -230,7 +263,11 @@ pub fn reassemble(input: ReassemblyInput) -> ReassembledStream {
             for (i, &byte) in tail.iter().enumerate() {
                 known_data.push((tail_offset + i as u64, byte));
             }
-            byte_map.push((tail_offset, seg.frame_number));
+            byte_map.push(ByteMapEntry {
+                start: tail_offset,
+                end: tail_offset + tail.len() as u64,
+                frame: seg.frame_number,
+            });
         }
 
         // Update contiguous_end_offset
@@ -261,6 +298,8 @@ pub fn reassemble(input: ReassemblyInput) -> ReassembledStream {
 
     known_data.sort_by_key(|(off, _)| *off);
     let data: Vec<u8> = known_data.iter().map(|(_, b)| *b).collect();
+
+    byte_map.sort_by_key(|e| e.start);
 
     ReassembledStream {
         data,

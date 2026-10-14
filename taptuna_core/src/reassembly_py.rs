@@ -154,8 +154,17 @@ impl PyReassembledStream {
             .collect()
     }
     #[getter]
-    fn byte_map(&self) -> Vec<(u64, u32)> {
-        self.inner.byte_map.clone()
+    fn byte_map(&self) -> Vec<(u64, u64, u32)> {
+        self.inner
+            .byte_map
+            .iter()
+            .map(|e| (e.start, e.end, e.frame))
+            .collect()
+    }
+
+    /// Look up the frame that contributed the byte at `offset`.
+    fn frame_at(&self, offset: u64) -> Option<u32> {
+        self.inner.frame_at(offset)
     }
 }
 
