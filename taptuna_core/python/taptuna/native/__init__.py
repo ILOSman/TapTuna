@@ -16,12 +16,14 @@ from . import reassembly as _reassembly
 # Загрузка _native
 # ---------------------------------------------------------------------------
 
+import importlib
+
 _native: Optional[Any] = None
 _native_error: Optional[str] = None
 
 if os.environ.get("TAPTUNA_NATIVE", "1") != "0":
     try:
-        from taptuna import _native as _native  # type: ignore
+        _native = importlib.import_module("taptuna._native")
     except BaseException as e:
         _native = None
         _native_error = f"{type(e).__name__}: {e}"
@@ -97,10 +99,19 @@ def reassemble(
 
 def native_status() -> dict:
     """Диагностика: что загружено, какая версия, какие ошибки."""
+    version = None
+    if _native is not None:
+        v = getattr(_native, "__version__", None)
+        if callable(v):
+            try:
+                v = v()
+            except Exception:
+                v = None
+        version = v
     return {
         "has_native": HAS_NATIVE,
         "error": _native_error,
-        "version": getattr(_native, "__version__", None) if _native else None,
+        "version": version,
         "module": getattr(_native, "__name__", None) if _native else None,
     }
 

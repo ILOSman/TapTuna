@@ -1,37 +1,32 @@
-"""Pytest fixtures for taptuna tests."""
-
+"""Общие фикстуры для тестов (§20.2–§20.3)."""
 from __future__ import annotations
 
-import tempfile
+import json
+import shutil
 from pathlib import Path
-from typing import Generator
+from typing import Iterator
 
 import pytest
 
-
-@pytest.fixture
-def tmp_project_dir() -> Generator[Path, None, None]:
-    """Создаёт временную директорию для проекта."""
-    with tempfile.TemporaryDirectory() as tmp:
-        yield Path(tmp) / "test_project"
+from taptuna.manifest import create_manifest
+from taptuna.store import init_db
 
 
 @pytest.fixture
-def project_dir(tmp_project_dir: Path) -> Path:
-    """Создаёт инициализированный проект (manifest + sqlite)."""
-    from taptuna.manifest import create_manifest
-    from taptuna.store import init_db
+def empty_project(tmp_path: Path) -> Path:
+    """Пустой проект: manifest.json + project.sqlite."""
+    project = tmp_path / "project"
+    project.mkdir()
+    create_manifest(project)
+    init_db(project)
+    return project
 
-    tmp_project_dir.mkdir(parents=True)
-    (tmp_project_dir / "captures").mkdir(exist_ok=True)
-    (tmp_project_dir / "blobs").mkdir(exist_ok=True)
-    (tmp_project_dir / "interpretations").mkdir(exist_ok=True)
-    (tmp_project_dir / "corpora").mkdir(exist_ok=True)
-    (tmp_project_dir / "action_log").mkdir(exist_ok=True)
-    (tmp_project_dir / "reports").mkdir(exist_ok=True)
-    (tmp_project_dir / "logs").mkdir(exist_ok=True)
 
-    create_manifest(tmp_project_dir)
-    init_db(tmp_project_dir)
-
-    return tmp_project_dir
+@pytest.fixture
+def sample_segments() -> list[dict]:
+    """Три сегмента с payload'ом, покрывающие базовый reassembly."""
+    return [
+        {"abs_seq": 1000, "len": 5, "frame_number": 1, "data": b"Hello"},
+        {"abs_seq": 1005, "len": 5, "frame_number": 2, "data": b"World"},
+        {"abs_seq": 1010, "len": 3, "frame_number": 3, "data": b"!!!"},
+    ]

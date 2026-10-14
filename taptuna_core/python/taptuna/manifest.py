@@ -27,7 +27,12 @@ import sys
 from pathlib import Path
 from typing import Any
 
-import config
+try:
+    import config  # type: ignore
+    _PROJECT_VERSION = getattr(config, "PROJECT_VERSION", "0.1.0")
+except ImportError:
+    config = None  # type: ignore
+    _PROJECT_VERSION = "0.1.0"
 
 from .errors import ProjectAlreadyExistsError
 
@@ -73,7 +78,7 @@ def create_manifest(project_dir: Path) -> dict[str, Any]:
 
     manifest = {
         "schema_version": SCHEMA_VERSION,
-        "app_version": config.PROJECT_VERSION if hasattr(config, "PROJECT_VERSION") else "0.1.0",
+        "app_version": _PROJECT_VERSION,
         "user_version": 1,  # PRAGMA user_version схемы БД
         "tshark_version": _get_tshark_version(),
         "python_version": sys.version.split()[0],

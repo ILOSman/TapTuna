@@ -21,22 +21,30 @@ def call_native(
 
     r = native_module.reassembly
 
-    # Приводим policy к виду, который принимает native.
-    # В PyO3-модуле это enum, обычно доступный как атрибут.
+    # Собираем PySegmentWrapper-объекты
+    wrapper_cls = getattr(r, "PySegmentWrapper", None)
+    if wrapper_cls is None:
+        raise RuntimeError("_native.reassembly.PySegmentWrapper not found")
+
+    native_segments = []
+    for s in segments:
+        native_segments.append(wrapper_cls(
+            int(s["abs_seq"]),
+            int(s["len"]),
+            int(s["frame_number"]),
+            bytes(s["data"]),
+        ))
+
+    # Политика
     policy_obj = _resolve_policy(r, overlap_policy)
 
-    # Собираем вход. У PyO3-структуры обычно есть __new__,
-    # принимающий именованные аргументы.
-    if hasattr(r, "PyReassemblyInput"):
-        inp = r.PyReassemblyInput(
-            segments,           # list[PySegmentWrapper]-совместимое
-            policy_obj,
-            syn_seq,
-        )
+    # Вход
+    inp_cls = getattr(r, "PyReassemblyInput", None)
+    if inp_cls is not None:
+        inp = inp_cls(native_segments, policy_obj, syn_seq)
         out = r.reassemble_py(inp)
     else:
-        # Альтернативный API: reassemble(segments, syn_seq, policy)
-        out = r.reassemble(segments, syn_seq, policy_obj)
+        out = r.reassemble(native_segments, syn_seq, policy_obj)
 
     return _normalize_output(out)
 

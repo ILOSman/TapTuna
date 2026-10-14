@@ -1,0 +1,107 @@
+```jinja
+# Отчёт о верификации протокола
+
+**Интерпретация:** `{{ interpretation.name }}@v{{ interpretation.version }}`  
+**Прогон:** #{{ run.id }}, вердикт: **{{ summary.verdict | default('unknown') }}**  
+**Run hash:** `{{ summary.run_hash | default('—') }}`  
+**Дата:** {{ run.finished_at | default('—') }}
+
+## 1. Цели и границы
+
+Цель: верификация гипотез о структуре протокола на корпусе `{{ corpus.name }}`.
+
+Границы: анализ ограничен TCP-потоками и framing/fields в рамках выбранной интерпретации.
+
+## 2. Метод
+
+- **Версия tshark:** `{{ manifest.tshark_version | default('unknown') }}`
+- **Python:** `{{ manifest.python_version | default('unknown') }}`
+- **Платформа:** `{{ manifest.platform | default('unknown') }}`
+- **Overlap policy:** `{{ manifest.policies.overlap | default('unknown') }}`
+- **Checksum policy:** `{{ manifest.policies.checksum | default('unknown') }}`
+
+Команда ingest:
+
+```
+tshark -r <file> -T fields -E separator=\t -E occurrence=f \
+{% for f in ["tcp.stream", "frame.number", "frame.time_epoch", "ip.src", "ip.dst", "tcp.srcport", "tcp.dstport", "tcp.seq", "tcp.ack", "tcp.len", "tcp.flags.syn", "tcp.flags.ack", "tcp.flags.fin", "tcp.flags.reset", "tcp.payload"] %}  -e {{ f }} \
+{% endfor %}
+```
+
+## 3. Корпус
+
+Название: `{{ corpus.name }}`
+
+Критерии: `{{ corpus.criteria_json }}`
+
+Записи:
+
+{% for c in captures %}
+- `{{ c.sha256[:16] }}…` — {{ c.filename }} ({{ c.packet_count }} пакетов)
+{% endfor %}
+
+## 4. Проверенные примеры
+
+{% if verified_examples %}
+{% for ex in verified_examples[:10] %}
+- Сообщение #{{ ex.message_index }} @ offset {{ ex.stream_offset }}, длина {{ ex.length }}: `{{ ex.message_name }}`
+{% endfor %}
+{% else %}
+_Нет проверенных примеров._
+{% endif %}
+
+## 5. Контрпримеры
+
+{% if counterexamples %}
+{% for ex in counterexamples[:10] %}
+- **{{ ex.status }}** Сообщение #{{ ex.message_index }} @ offset {{ ex.stream_offset }}: {{ ex.message_name }}
+{% endfor %}
+{% else %}
+_Контрпримеры не обнаружены._
+{% endif %}
+
+## 6. Неизвестные участки
+
+{% if unknown_areas %}
+{% for ex in unknown_areas[:10] %}
+- {{ ex.status }} @ offset {{ ex.stream_offset }}, длина {{ ex.length }}
+{% endfor %}
+{% else %}
+_Неизвестные участки отсутствуют._
+{% endif %}
+
+## 7. Область применимости
+
+Модель применима к TCP-потокам, соответствующим критериям корпуса `{{ corpus.name }}`. Перенос на другие протоколы и порты требует переобучения/перепроверки.
+
+## 8. Открытые вопросы
+
+- Полнота покрытия: {{ unknown_areas | length }} участков остались неизвестными
+- Контрпримеры: {{ counterexamples | length }} сообщений нарушили правила
+- Проверенные примеры: {{ verified_examples | length }} успешно разобраны
+
+## 9. Гипотезы (отдельно от правил)
+
+{% if hypotheses %}
+{% for h in hypotheses %}
+- [{{ h.status }}] {{ h.formulation }}
+{% endfor %}
+{% else %}
+_Гипотезы не зафиксированы._
+{% endif %}
+
+## 10. Предупреждение о checksum offloading
+
+Checksum-поля IP/TCP могут быть некорректны в захватах, сделанных на интерфейсе отправки (checksum offloading). Все выводы о checksum следует проверять на захватах с интерфейса приёма.
+
+## Сводка результатов
+
+| Статус | Количество |
+|---|---|
+| ok | {{ status_counts.ok | default(0) }} |
+| violation | {{ status_counts.violation | default(0) }} |
+| ambiguous | {{ status_counts.ambiguous | default(0) }} |
+| incomplete | {{ status_counts.incomplete | default(0) }} |
+| not_applicable | {{ status_counts.not_applicable | default(0) }} |
+| unknown_frame | {{ status_counts.unknown_frame | default(0) }} |
+```

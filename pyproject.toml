@@ -1,38 +1,40 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel", "maturin>=1.0,<2.0"]
-build-backend = "setuptools.build_meta"
+requires = ["maturin>=1.5,<2.0"]
+build-backend = "maturin"
 
 [project]
-name = "taptuna"
+name = "taptuna-core"
 version = "0.1.0"
-description = "Protocol Laboratory"
+description = "TapTuna native core: wire, reassembly, framing, extract, safe-eval"
 readme = "README.md"
 requires-python = ">=3.11"
-license = {text = "MIT"}
-authors = [
-    {name = "Alex"}
+license = { text = "MIT" }
+authors = [{ name = "ILOSman" }]
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
 ]
 dependencies = [
-    "Flask>=3.0.3",
-    "Jinja2>=3.1.2",
+    "flask>=3.0",
+    "markdown>=3.5",
+    "jinja2>=3.1",
+    "pyyaml>=6.0",
 ]
 
 [project.scripts]
 taptuna = "taptuna.cli:main"
 
-[project.optional-dependencies]
-dev = [
-    "pytest>=8.3.2",
-    "maturin>=1.0,<2.0",
-]
+[project.urls]
+Repository = "https://github.com/ILOSman/temp"
 
 [tool.maturin]
-module = "taptuna._native"
-manifest-path = "taptuna_core/Cargo.toml"
-bindings = ["pyo3"]
-strip-all = true
-debug = false
-release-mode = "auto"
-
-[tool.setuptools.packages.find]
-where = ["taptuna"]
+python-source = "python"
+module-name = "taptuna._native"
+manifest-path = "Cargo.toml"
+bindings = "pyo3"
+strip = true

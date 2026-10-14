@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
 
+from .store import open_db, write_blob
 from .errors import ProtocolLabError, TsharkNotFoundError, ValidationError
 from .tshark_check import get_tshark_path
 
@@ -384,7 +385,7 @@ def _reassemble_direction(
 # Шаг 5: запись в SQLite
 # ---------------------------------------------------------------------------
 
-def _store_session(conn, capture_id: int, s: SessionData, policy: dict) -> None:
+def _store_session(conn, project_dir: Path, capture_id: int, s: SessionData, policy: dict) -> None:
     cur = conn.cursor()
     cur.execute(
         """INSERT INTO sessions
@@ -428,10 +429,15 @@ def _store_session(conn, capture_id: int, s: SessionData, policy: dict) -> None:
 
         # packets
         for p in d.packets:
-            payload_sha = hashlib.sha256(p.payload).hexdigest() if p.payload else None
-            inline = p.payload if len(p.payload) <= policy.get("blob_inline_threshold", 4096) else None
+            payload_sha = None
+            inline = None
+            if p.payload:
+                payload_sha = hashlib.sha256(p.payload).hexdigest()
+                if len(p.payload) <= policy.get("blob_inline_threshold", 4096):
+                    inline = p.payload
+                else:
+                    write_blob(project_dir, p.payload)   # CAS для крупных
             stream_offset = None
-            # byte_map: найти offset для frame
             for (start, end, frame) in d.byte_map:
                 if frame == p.frame:
                     stream_offset = start
@@ -524,7 +530,7 @@ def ingest_capture(
             d.stream_start_abs_seq = reassembled.stream_start_abs_seq
             d.roles_established = reassembled.roles_established
 
-        _store_session(conn, capture_id, s, policy)
+        _store_session(conn, project_dir, capture_id, s, policy)
         progress(f"stored session {s.stream_index}", 0.5 + 0.5 * (i + 1) / total)
 
     conn.close()

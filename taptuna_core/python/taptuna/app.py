@@ -7,28 +7,25 @@ from pathlib import Path
 from flask import Flask, jsonify
 
 from .errors import ProtocolLabError
-from .routes import bp as api_bp
+from .routes import bp as api_bp, register_error_handlers
 
 
 def create_app(project_dir: Path) -> Flask:
-    """Создаёт и конфигурирует Flask-приложение для проекта."""
-    app = Flask(__name__)
-    app.config["PROJECT_DIR"] = project_dir
+    """Создаёт и конфигурирует Flask-приложение для проекта.
 
-    # Register API blueprint
+    Важно: не создаёт manifest.json и project.sqlite. Для инициализации
+    проекта используйте `POST /api/projects` или `taptuna init`.
+    """
+    app = Flask(__name__)
+    app.config["PROJECT_DIR"] = Path(project_dir)
+
     app.register_blueprint(api_bp, url_prefix="/api")
 
-    # Error handlers
+    # Единый источник error handlers — routes.py
+    register_error_handlers(app)
+
     @app.errorhandler(ProtocolLabError)
     def handle_taptuna_error(e: ProtocolLabError):
         return jsonify(e.to_dict()), e.http_status
-
-    @app.errorhandler(404)
-    def handle_404(e):
-        return jsonify({"error": {"code": "NOT_FOUND", "message": "Not found", "details": {}}}), 404
-
-    @app.errorhandler(500)
-    def handle_500(e):
-        return jsonify({"error": {"code": "INTERNAL_ERROR", "message": "Internal server error", "details": {}}}), 500
 
     return app

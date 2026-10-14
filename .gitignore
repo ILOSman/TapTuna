@@ -6,7 +6,7 @@ __pycache__/
 test.pcap
 2024-09-04-traffic-analysis-exercise.pcap
 socks-http-example.pcap
-
+check_ingest.sh
 # C extensions
 *.so
 

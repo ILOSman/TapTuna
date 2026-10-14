@@ -6,8 +6,8 @@ Schema v1 (ТЗ §14): 14 tables + indexes.
 from __future__ import annotations
 
 import sqlite3
+import hashlib
 from pathlib import Path
-from typing import Any
 
 
 SCHEMA_VERSION = 1
@@ -271,6 +271,140 @@ def get_user_version(conn: sqlite3.Connection) -> int:
     row = conn.execute("PRAGMA user_version").fetchone()
     return row[0] if row else 0
 
+# --- CAS (Content-Addressed Storage) ---
+
+def write_blob(project_dir: Path, data: bytes) -> str:
+    """Записывает blob в blobs/.bin, возвращает sha256.
+    Если blob уже существует — не перезаписывает."""
+    sha = hashlib.sha256(data).hexdigest()
+    blobs_dir = project_dir / "blobs"
+    blobs_dir.mkdir(parents=True, exist_ok=True)
+    path = blobs_dir / f"{sha}.bin"
+    if not path.exists():
+        path.write_bytes(data)
+    return sha
+
+def read_blob(project_dir: Path, sha: str) -> bytes:
+    """Читает blob по sha256. Поднимает FileNotFoundError, если нет."""
+    path = project_dir / "blobs" / f"{sha}.bin"
+    if not path.exists():
+        raise FileNotFoundError(f"Blob not found: {sha}")
+    return path.read_bytes()
+
+# --- Captures ---
+
+def insert_capture(conn, sha256, filename, file_size, packet_count,
+                   tshark_version, notes=None) -> int:
+    """Возвращает capture_id. При повторном sha256 — возвращает существующий id
+    и НЕ перезаписывает (ТЗ §10: повторный импорт — явное предупреждение)."""
+    cur = conn.cursor()
+    cur.execute(
+        """INSERT OR IGNORE INTO captures
+           (sha256, filename, file_size, packet_count, tshark_version, notes)
+           VALUES (?,?,?,?,?,?)""",
+        (sha256, filename, file_size, packet_count, tshark_version, notes),
+    )
+    conn.commit()
+    cur.execute("SELECT id FROM captures WHERE sha256 = ?", (sha256,))
+    return cur.fetchone()[0]
+
+def get_capture_by_sha(conn, sha256: str) -> dict | None:
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM captures WHERE sha256 = ?", (sha256,))
+    row = cur.fetchone()
+    return dict(row) if row else None
+
+# --- Sessions / Directions / Packets ---
+
+def insert_session(conn, capture_id, stream_index, ip_src, ip_dst,
+                   port_src, port_dst, roles_established, syn_frame,
+                   first_frame, last_frame, start_time, end_time,
+                   packets_a2b, packets_b2a, bytes_a2b, bytes_b2a) -> int:
+    cur = conn.cursor()
+    cur.execute(
+        """INSERT INTO sessions
+           (capture_id, stream_index, ip_src, ip_dst, port_src, port_dst,
+            roles_established, syn_frame, first_frame, last_frame,
+            start_time, end_time, packets_a2b, packets_b2a, bytes_a2b, bytes_b2a)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (capture_id, stream_index, ip_src, ip_dst, port_src, port_dst,
+         int(roles_established), syn_frame, first_frame, last_frame,
+         start_time, end_time, packets_a2b, packets_b2a, bytes_a2b, bytes_b2a),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+def insert_direction(conn, session_id, direction, stream_start_abs_seq,
+                     reassembled_bytes, gaps_json, ambiguities_json,
+                     overlap_policy) -> int:
+    cur = conn.cursor()
+    cur.execute(
+        """INSERT INTO directions
+           (session_id, direction, stream_start_abs_seq, reassembled_bytes,
+            gaps_json, ambiguities_json, overlap_policy)
+           VALUES (?,?,?,?,?,?,?)""",
+        (session_id, direction, stream_start_abs_seq, reassembled_bytes,
+         gaps_json, ambiguities_json, overlap_policy),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+def insert_stream_segment(conn, direction_id, stream_offset, length,
+                          abs_seq_start, abs_seq_end, status,
+                          first_frame, last_frame) -> int:
+    cur = conn.cursor()
+    cur.execute(
+        """INSERT INTO stream_segments
+           (direction_id, stream_offset, length, abs_seq_start, abs_seq_end,
+            status, first_frame, last_frame)
+           VALUES (?,?,?,?,?,?,?,?)""",
+        (direction_id, stream_offset, length, abs_seq_start, abs_seq_end,
+         status, first_frame, last_frame),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+def insert_packet(conn, direction_id, frame_number, abs_seq, tcp_len,
+                  flags_syn, flags_ack, flags_fin, flags_rst,
+                  payload_sha256, payload_inline, stream_offset) -> int:
+    cur = conn.cursor()
+    cur.execute(
+        """INSERT INTO packets
+           (direction_id, frame_number, abs_seq, tcp_len,
+            flags_syn, flags_ack, flags_fin, flags_rst,
+            payload_sha256, payload_inline, stream_offset)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+        (direction_id, frame_number, abs_seq, tcp_len,
+         int(flags_syn), int(flags_ack), int(flags_fin), int(flags_rst),
+         payload_sha256, payload_inline, stream_offset),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+# --- Query helpers ---
+
+def get_sessions(conn, capture_id: int) -> list[dict]:
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM sessions WHERE capture_id = ? ORDER BY stream_index",
+                (capture_id,))
+    return [dict(r) for r in cur.fetchall()]
+
+def get_directions(conn, session_id: int) -> list[dict]:
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM directions WHERE session_id = ?", (session_id,))
+    return [dict(r) for r in cur.fetchall()]
+
+def get_packets(conn, direction_id: int) -> list[dict]:
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM packets WHERE direction_id = ? ORDER BY frame_number",
+                (direction_id,))
+    return [dict(r) for r in cur.fetchall()]
+
+def get_stream_segments(conn, direction_id: int) -> list[dict]:
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM stream_segments WHERE direction_id = ? ORDER BY stream_offset",
+                (direction_id,))
+    return [dict(r) for r in cur.fetchall()]
 
 def set_user_version(conn: sqlite3.Connection, version: int) -> None:
     """Устанавливает PRAGMA user_version."""

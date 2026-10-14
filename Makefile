@@ -1,18 +1,35 @@
-VENV ?= .venv
-PYTHON := $(VENV)/bin/python
+.PHONY: help install test test-rust test-python test-examples bench clean
 
-# Default PYTHONPATH for running from project root
-PYTHONPATH := $(CURDIR)
+help:
+	@echo "make targets:"
+	@echo "  install       — editable install taptuna-core + зависимости"
+	@echo "  test          — все тесты (rust + python)"
+	@echo "  test-rust     — cargo test в taptuna_core"
+	@echo "  test-python   — pytest в tests/"
+	@echo "  test-examples — E2E на эталонном PCAP"
+	@echo "  bench         — cargo bench --no-run"
+	@echo "  clean         — удалить артефакты"
 
-test:
-	PYTHONPATH=$(PYTHONPATH) $(PYTHON) -m pytest -q
+install:
+	pip install -e taptuna_core
+	pip install pytest markdown jinja2 pyyaml flask scapy
+
+test: test-rust test-python
+
+test-rust:
+	cd taptuna_core && cargo test
+
+test-python:
+	pytest tests/ -v
 
 test-examples:
-	@echo "test-examples: not implemented"
-	exit 2
+	bash taptuna_core/python/taptuna/examples/run.sh
 
 bench:
-	@echo "bench: not implemented"
-	exit 2
+	cd taptuna_core && cargo bench --no-run
+	@echo "run 'cd taptuna_core && cargo bench' for full benchmarks"
 
-.PHONY: test test-examples bench
+clean:
+	rm -rf /tmp/taptuna_example /tmp/taptuna_api_test /tmp/taptuna_cli_test
+	cd taptuna_core && cargo clean
+	rm -rf .pytest_cache tests/__pycache__

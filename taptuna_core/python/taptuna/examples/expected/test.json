@@ -1,0 +1,25 @@
+{
+  "description": "TCP session: SYN, SYN-ACK, data, FIN",
+  "pcap": "input/test.pcap",
+  "packets": 4,
+  "sessions": 1,
+  "expected_streams": {
+    "a_to_b": {
+      "reassembled_bytes": 13,
+      "data": "Hello, World!",
+      "gaps": 0,
+      "ambiguities": 0
+    },
+    "b_to_a": {
+      "reassembled_bytes": 0,
+      "data": "",
+      "gaps": 0,
+      "ambiguities": 0
+    }
+  },
+  "roles_established": true,
+  "verification": {
+    "verdict": "ok",
+    "messages": 1
+  }
+}
