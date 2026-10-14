@@ -1,0 +1,20 @@
+[package]
+name = "taptuna_core"
+version = "0.1.0"
+edition = "2021"
+description = "Native core for TapTuna: wire parsing, sequence tracking, stream reassembly"
+license = "MIT"
+
+[lib]
+name = "_native"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+pyo3 = { version = "0.22", features = ["extension-module", "abi3-py311"] }
+thiserror = "1"
+sha2 = "0.10"
+
+[lints.rust]
+# pyo3 0.22 использует cfg(feature = "gil-refs") внутри макроса create_exception!
+# без регистрации этого значения в check-cfg — глушим предупреждение.
+unexpected_cfgs = { level = "allow", check-cfg = ['cfg(feature, values("gil-refs"))'] }
