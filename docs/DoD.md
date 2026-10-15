@@ -138,10 +138,10 @@ JSON-файлы `dhat-heap-<N>MiB.json` открываются в
 
 | Набор | Команда | Результат |
 |---|---|---|
-| Rust unit | `cargo test --lib` | 18 passed |
+| Rust unit | `cargo test --lib` | 22 passed |
 | Rust cross-check | `cargo test --test cross_check` | 1 passed |
 | Rust property | `cargo test --test property` | 4 passed |
-| **Rust всего** | `cargo test` | **23 passed** |
+| **Rust всего** | `cargo test` | **27 passed** |
 | Rust bench | `cargo bench --no-run` | ✅ |
 | Python unit | `pytest tests/ -v` | **49 passed** |
 | Cross-validation | `pytest tests/test_cross_validation.py` | 4 passed |
@@ -156,7 +156,7 @@ JSON-файлы `dhat-heap-<N>MiB.json` открываются в
 | E2E | `make test-examples` | ALL OK |
 | Fallback | `TAPTUNA_NATIVE=0 pytest tests/` | 49 passed |
 
-**Итог:** 23 Rust + 49 Python = **72 теста**, все зелёные.
+**Итого:** 27 Rust + 49 Python (native) / 44+5 skip (fallback).
 
 ## 6. CI: сборка колёс
 

@@ -142,5 +142,6 @@ fn frame_stream(
     result.set_item("messages", messages)?;
     result.set_item("leftover", PyBytes::new_bound(py, &out.leftover))?;
     result.set_item("leftover_offset", out.leftover_offset)?;
+    result.set_item("leftover_reason", out.leftover_reason.clone())?;
     Ok(result.into())
 }

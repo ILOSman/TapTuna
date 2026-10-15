@@ -14,7 +14,7 @@
      * @param {string} opts.direction  — 'a_to_b' | 'b_to_a'
      * @param {string} opts.projectId
      * @param {number} opts.size       — общее число байт в потоке
-     * @param {Array}  opts.marks      — [{start, end, kind: 'gap'|'amb'}]
+     * @param {Array}  opts.marks      — [{start, end, kind: 'gap'|'amb'|'msg-N'}]
      * @param {Function} [opts.onByteClick]
      */
     constructor(container, opts) {
@@ -30,6 +30,9 @@
       this.pending = new Set();   // chunkIdx, которые сейчас грузятся
       this.firstRendered = -1;
       this.lastRendered = -1;
+      this.flashOffset = null;    // один байт для подсветки (jumpTo)
+      this._flashRange = null;    // [start, end) для подсветки диапазона (flashRange)
+      this._flashTimer = null;
 
       this.root.classList.add("hex-vscroll");
       this.root.style.height = "600px";
@@ -161,6 +164,10 @@
             const classes = ["byte"];
             if (kind) classes.push(kind);
             if (this.flashOffset === abs) classes.push("flash");
+            if (this._flashRange &&
+                abs >= this._flashRange[0] && abs < this._flashRange[1]) {
+              classes.push("flash-range");
+            }
             const cls = classes.join(" ");
             hexPart += '<span class="' + cls + '" data-off="' + abs + '">' + h + "</span> ";
             const ch = b >= 32 && b < 127 ? String.fromCharCode(b) : ".";
@@ -188,8 +195,7 @@
       }
     }
 
-    /** Прокрутка к offset (для jump-to-offset). */
-    /** Прокрутка к offset с визуальной подсветкой байта. */
+    /** Прокрутка к offset с визуальной подсветкой одного байта. */
     jumpTo(absOffset) {
       if (absOffset < 0) absOffset = 0;
       if (absOffset >= this.size && this.size > 0) absOffset = this.size - 1;
@@ -207,6 +213,7 @@
 
       // Визуальная подсветка целевого байта — снимаем старую, ставим новую.
       this.flashOffset = absOffset;
+      this._flashRange = null;
       this.render();
       clearTimeout(this._flashTimer);
       this._flashTimer = setTimeout(() => {
@@ -216,6 +223,34 @@
 
       // Подгружаем чанк, если его ещё нет.
       this.ensureChunks(line, line + viewportLines);
+    }
+
+    /** Подсветить диапазон байт [start, end) на 2.5 секунды. */
+    flashRange(start, end) {
+      if (start < 0) start = 0;
+      if (end > this.size) end = this.size;
+      if (end <= start) return;
+
+      const line = Math.floor(start / BYTES_PER_LINE);
+      const viewportLines = Math.floor((this.root.clientHeight || 600) / LINE_HEIGHT);
+      const targetScroll = Math.max(0, (line - Math.floor(viewportLines / 2)) * LINE_HEIGHT);
+      this.root.scrollTop = targetScroll;
+
+      this.firstRendered = -1;
+      this.lastRendered = -1;
+      this.onScroll();
+
+      this.flashOffset = null;
+      this._flashRange = [start, end];
+      this.render();
+      clearTimeout(this._flashTimer);
+      this._flashTimer = setTimeout(() => {
+        this._flashRange = null;
+        this.render();
+      }, 2500);
+
+      const lastLine = Math.floor((end - 1) / BYTES_PER_LINE);
+      this.ensureChunks(line, lastLine);
     }
 
     /** Обновление marks без перезагрузки. */

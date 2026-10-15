@@ -455,6 +455,8 @@ def api_framing_preview(session_id: int):
         return _ok({
             "messages": [],
             "total_bytes": len(stream),
+            "leftover_bytes": 0,
+            "leftover_reason": None,
             "framing_error": str(e),
             "framing_error_type": type(e).__name__,
         })
@@ -476,6 +478,7 @@ def api_framing_preview(session_id: int):
         "messages": messages,
         "total_bytes": len(stream),
         "leftover_bytes": len(out.get("leftover", b"")),
+        "leftover_reason": out.get("leftover_reason"),
         "framing_error": None,
     })
 

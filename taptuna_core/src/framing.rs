@@ -45,6 +45,7 @@ pub struct FramingOutput {
     pub messages: Vec<FramedMessage>,
     pub leftover: Vec<u8>,
     pub leftover_offset: u64,
+    pub leftover_reason: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -97,6 +98,7 @@ fn frame_length_prefix(
 ) -> Result<FramingOutput, FramingError> {
     let mut messages = Vec::new();
     let mut pos = 0usize;
+    let mut leftover_reason: Option<String> = None;
 
     while pos + prefix_bytes <= stream.len() {
         let prefix = &stream[pos..pos + prefix_bytes];
@@ -119,6 +121,11 @@ fn frame_length_prefix(
             return Err(FramingError::TooLarge(total));
         }
         if pos + total > stream.len() {
+            let available = stream.len() - pos;
+            leftover_reason = Some(format!(
+                "prefix at offset {} says {} bytes, only {} available",
+                pos, total, available
+            ));
             break;
         }
         messages.push(FramedMessage {
@@ -129,10 +136,24 @@ fn frame_length_prefix(
         pos += total;
     }
 
+    // Если цикл завершился по условию `pos + prefix_bytes > stream.len()`
+    // и leftover_reason ещё не выставлен — значит остался «огрызок»
+    // меньше размера префикса, не из чего даже прочитать длину.
+    if leftover_reason.is_none() && pos < stream.len() {
+        let available = stream.len() - pos;
+        if available > 0 {
+            leftover_reason = Some(format!(
+                "{} trailing bytes < prefix_bytes={}, cannot read length",
+                available, prefix_bytes
+            ));
+        }
+    }
+
     Ok(FramingOutput {
         messages,
         leftover: stream[pos..].to_vec(),
         leftover_offset: pos as u64,
+        leftover_reason,
     })
 }
 
@@ -147,6 +168,7 @@ fn frame_delimiter(
             messages: Vec::new(),
             leftover: stream.to_vec(),
             leftover_offset: 0,
+            leftover_reason: Some("empty delimiter — nothing to split on".into()),
         });
     }
     let mut messages = Vec::new();
@@ -170,10 +192,21 @@ fn frame_delimiter(
             i += 1;
         }
     }
+
+    let leftover_reason = if start < stream.len() {
+        Some(format!(
+            "trailing {} bytes without delimiter at the end",
+            stream.len() - start
+        ))
+    } else {
+        None
+    };
+
     Ok(FramingOutput {
         messages,
         leftover: stream[start..].to_vec(),
         leftover_offset: start as u64,
+        leftover_reason,
     })
 }
 
@@ -195,10 +228,22 @@ fn frame_fixed(
         });
         pos += size;
     }
+
+    let leftover_reason = if pos < stream.len() {
+        Some(format!(
+            "trailing {} bytes < fixed size {}",
+            stream.len() - pos,
+            size
+        ))
+    } else {
+        None
+    };
+
     Ok(FramingOutput {
         messages,
         leftover: stream[pos..].to_vec(),
         leftover_offset: pos as u64,
+        leftover_reason,
     })
 }
 
@@ -225,27 +270,72 @@ fn frame_regex(
     // Regex crate operates on &str. We restrict to UTF-8-lossy view.
     let text = String::from_utf8_lossy(stream).into_owned();
     let mut messages = Vec::new();
-    let mut last = 0usize;
+    let mut last_end = 0usize;
+
     for m in re.find_iter(&text) {
-        let end = if include_match { m.end() } else { m.start() };
-        if end <= last {
+        // Message boundaries:
+        //   include_match=true  → message = сам матч [m.start, m.end)
+        //   include_match=false → message = gap перед матчем [last_end, m.start)
+        let (start, end) = if include_match {
+            (m.start(), m.end())
+        } else {
+            (last_end, m.start())
+        };
+
+        if end <= start {
+            // Пустое сообщение — пропускаем, но обновляем курсор
+            if include_match {
+                last_end = m.end();
+            }
             continue;
         }
-        let slice = &stream[last..end];
+
+        let slice = &stream[start..end];
         if slice.len() > max_message {
             return Err(FramingError::TooLarge(slice.len()));
         }
         messages.push(FramedMessage {
-            offset: last as u64,
+            offset: start as u64,
             length: slice.len(),
             bytes: slice.to_vec(),
         });
-        last = m.end();
+
+        if include_match {
+            last_end = m.end();
+        } else {
+            last_end = m.start();
+        }
     }
+
+    // Leftover — всё, что после последнего матча (для include_match=true)
+    // или после последнего gap-сообщения (для include_match=false).
+    let leftover_start = if include_match {
+        last_end
+    } else {
+        // Для include_match=false последнее "сообщение" — это gap перед последним
+        // матчем. Всё, начиная с последнего матча, — leftover.
+        last_end
+    };
+    let leftover = if leftover_start <= stream.len() {
+        stream[leftover_start..].to_vec()
+    } else {
+        Vec::new()
+    };
+
+    let leftover_reason = if leftover.is_empty() {
+        None
+    } else {
+        Some(format!(
+            "trailing {} bytes unmatched by regex",
+            leftover.len()
+        ))
+    };
+
     Ok(FramingOutput {
         messages,
-        leftover: stream[last..].to_vec(),
-        leftover_offset: last as u64,
+        leftover,
+        leftover_offset: leftover_start as u64,
+        leftover_reason,
     })
 }
 
@@ -326,5 +416,70 @@ mod tests {
         assert_eq!(out.messages.len(), 2);
         assert_eq!(out.messages[0].bytes, b"one\n");
         assert_eq!(out.messages[1].bytes, b"two\n");
+    }
+
+    #[test]
+    fn length_prefix_leftover_reason_insufficient_data() {
+        // Префикс говорит "5 байт", но в потоке только 3 после префикса
+        let s = b"\x00\x05ab"; // prefix=00 05 → length=5, available = 2
+        let strat = FramingStrategy::LengthPrefix {
+            prefix_bytes: 2,
+            big_endian: true,
+            length_includes_prefix: false,
+            max_message: 1024,
+        };
+        let out = frame(s, &strat).unwrap();
+        assert_eq!(out.messages.len(), 0);
+        assert_eq!(out.leftover.len(), 4);
+        assert!(out.leftover_reason.is_some());
+        let reason = out.leftover_reason.unwrap();
+        assert!(reason.contains("says 7 bytes"), "reason: {}", reason);
+        assert!(reason.contains("only 4 available"), "reason: {}", reason);
+    }
+
+    #[test]
+    fn length_prefix_leftover_reason_short_tail() {
+        // Один байт в хвосте < prefix_bytes=2 — нельзя даже прочитать длину
+        let s = b"\x00\x03abc\xFF"; // 5 байт, prefix 2, msg 3, хвост 1 байт
+        let strat = FramingStrategy::LengthPrefix {
+            prefix_bytes: 2,
+            big_endian: true,
+            length_includes_prefix: false,
+            max_message: 1024,
+        };
+        let out = frame(s, &strat).unwrap();
+        assert_eq!(out.messages.len(), 1);
+        assert_eq!(out.messages[0].bytes, b"\x00\x03abc");
+        assert_eq!(out.leftover, b"\xFF");
+        assert!(out.leftover_reason.is_some());
+        assert!(out.leftover_reason.unwrap().contains("1 trailing bytes"));
+    }
+
+    #[test]
+    fn delimiter_leftover_reason() {
+        let s = b"one\r\ntwo\r\nthree";
+        let strat = FramingStrategy::Delimiter {
+            delim: b"\r\n".to_vec(),
+            include_delim: false,
+            max_message: 1024,
+        };
+        let out = frame(s, &strat).unwrap();
+        assert_eq!(out.messages.len(), 2);
+        assert_eq!(out.leftover, b"three");
+        assert!(out.leftover_reason.is_some());
+    }
+
+    #[test]
+    fn fixed_leftover_reason() {
+        let s = b"ABCDEFGHXY";
+        let strat = FramingStrategy::Fixed {
+            size: 4,
+            max_message: 100,
+        };
+        let out = frame(s, &strat).unwrap();
+        assert_eq!(out.messages.len(), 2);
+        assert_eq!(out.leftover, b"XY");
+        assert!(out.leftover_reason.is_some());
+        assert!(out.leftover_reason.unwrap().contains("trailing 2 bytes"));
     }
 }

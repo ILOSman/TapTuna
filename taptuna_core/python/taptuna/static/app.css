@@ -275,3 +275,16 @@ table tr:hover td { background: #fbfbfd; }
   background: #fff3c7 !important;
   transition: background 0.3s;
 }
+
+/* Подсветка границ сообщений в framing-tool */
+.hex-vscroll .byte.msg-0 { background: #e3f2fd; }
+.hex-vscroll .byte.msg-1 { background: #f3e5f5; }
+.hex-vscroll .byte.msg-2 { background: #e8f5e9; }
+.hex-vscroll .byte.msg-3 { background: #fff3e0; }
+.hex-vscroll .byte.msg-4 { background: #fce4ec; }
+
+/* Подсветка диапазона при клике «к байтам» */
+.hex-vscroll .byte.flash-range {
+  background: #ffe066;
+  outline: 1px solid #f59f00;
+}

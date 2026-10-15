@@ -153,6 +153,8 @@
   <div class="row">
     <h2 style="margin:0">Framing tool</h2>
     <span class="spacer"></span>
+    <button id="framing-highlight" disabled>Показать границы в hex</button>
+    <button id="framing-clear" disabled>Снять подсветку</button>
     <button id="framing-apply" class="primary">Применить</button>
   </div>
   <div class="row" style="margin-top:0.5rem; gap:0.6rem">
@@ -221,7 +223,7 @@
   "use strict";
 
   // ============================================================
-  // DOM-ссылки (все в одном месте)
+  // DOM-ссылки
   // ============================================================
   const sel = document.getElementById("session-select");
   const loadBtn = document.getElementById("load-btn");
@@ -235,6 +237,8 @@
   const framingCard = document.getElementById("framing-card");
   const framingKind = document.getElementById("framing-kind");
   const framingApply = document.getElementById("framing-apply");
+  const framingHighlight = document.getElementById("framing-highlight");
+  const framingClear = document.getElementById("framing-clear");
   const framingResult = document.getElementById("framing-result");
 
   const streamsRow = document.getElementById("streams-row");
@@ -274,7 +278,7 @@
   // ============================================================
   let current = null;              // {sessionId, dirs, viewers}
   let currentFramingResult = null;
-  let compareState = null;         // {leftViewer, rightViewer, ...}
+  let compareState = null;
   const FRAMING_PAGE = 200;
 
   // ============================================================
@@ -293,30 +297,27 @@
   }
 
   function resetAllPanels() {
-    // Framing
     framingResult.innerHTML =
       '<p class="muted small">Нажмите «Применить», чтобы разбить поток.</p>';
     currentFramingResult = null;
 
-    // Поиск
+    if (framingHighlight) framingHighlight.disabled = true;
+    if (framingClear) framingClear.disabled = true;
+
     searchInfo.textContent = "";
     searchText.value = "";
 
-    // Сравнение
     compareRow.hidden = true;
     compareSummary.hidden = true;
     compareSummaryBody.innerHTML = "—";
     compareSelect.value = "";
     compareState = null;
 
-    // Возвращаем основной вид (если был скрыт из-за сравнения)
-    // Применение интерпретации
     if (applyInterpResult) {
       applyInterpResult.innerHTML = "—";
       applyInterpInfo.textContent = "";
     }
 
-    // Возвращаем основной вид (если был скрыт из-за сравнения)
     streamsRow.hidden = false;
   }
 
@@ -332,8 +333,6 @@
       return;
     }
 
-    // Инкремент токена: если пользователь переключит селект до завершения
-    // текущего запроса, старый ответ будет проигнорирован.
     const token = ++loadSessionToken;
 
     resetAllPanels();
@@ -353,7 +352,7 @@
       window.taptuna.toast("Ошибка загрузки: " + e.message, "err");
       return;
     }
-    if (token !== loadSessionToken) return;  // устаревший ответ
+    if (token !== loadSessionToken) return;
 
     const dirs = {};
     for (const d of (meta.directions || [])) dirs[d.direction] = d;
@@ -390,10 +389,8 @@
   }
 
   function populateCompareSelect(currentId) {
-    // Очищаем всё, кроме placeholder
     while (compareSelect.options.length > 1) compareSelect.remove(1);
 
-    // Источник данных — оригинальный селект с сессиями
     for (const opt of sel.options) {
       if (!opt.value) continue;
       if (String(opt.value) === String(currentId)) continue;
@@ -549,6 +546,8 @@
     if (r.framing_error) {
       framingResult.innerHTML = '<p style="color:#c53030">Framing error: ' +
         window.taptuna.escapeHtml(r.framing_error) + '</p>';
+      if (framingHighlight) framingHighlight.disabled = true;
+      if (framingClear) framingClear.disabled = true;
       return;
     }
 
@@ -556,6 +555,11 @@
     const leftover = r.leftover_bytes || 0;
     const total = r.total_bytes || 0;
     const head = msgs.slice(0, limit);
+
+    // Активируем кнопки управления подсветкой
+    const hasMsgs = msgs.length > 0;
+    if (framingHighlight) framingHighlight.disabled = !hasMsgs;
+    if (framingClear) framingClear.disabled = !hasMsgs;
 
     let html = '<div class="row small" style="margin-bottom:0.4rem; gap:1rem">' +
       '<span><strong>Сообщений:</strong> ' + msgs.length + '</span>' +
@@ -574,6 +578,7 @@
     if (!msgs.length && leftover === 0) {
       framingResult.innerHTML = html + '<p class="muted">Ни одного сообщения не найдено.</p>';
       bindFramingActions();
+      applyFramingMarks([]);
       return;
     }
 
@@ -587,7 +592,8 @@
         '<td>' + m.length + '</td>' +
         '<td class="mono small">' + window.taptuna.escapeHtml(m.hex_head) +
           (m.length > 32 ? "…" : "") + '</td>' +
-        '<td><a href="#" class="framing-jump" data-off="' + m.offset + '">к байтам</a></td>' +
+        '<td><a href="#" class="framing-jump" data-off="' + m.offset +
+          '" data-len="' + m.length + '">к байтам</a></td>' +
         '</tr>';
     }
     html += '</tbody></table>';
@@ -596,13 +602,34 @@
       html += '<p class="muted small">Показаны первые ' + limit + ' из ' + msgs.length + '.</p>';
     }
     if (leftover > 0) {
+      const reason = r.leftover_reason
+        ? ' <span style="color:#b7791f">(' + window.taptuna.escapeHtml(r.leftover_reason) + ')</span>'
+        : '';
       html += '<p class="muted small" style="margin-top:0.4rem">' +
-        'Хвост ' + leftover + ' байт не образует сообщения. ' +
+        'Хвост ' + leftover + ' байт не образует сообщения.' + reason + ' ' +
         '<a href="#" class="framing-jump" data-off="' + (total - leftover) + '">перейти к хвосту</a>' +
         '</p>';
     }
     framingResult.innerHTML = html;
     bindFramingActions();
+
+    // Подсветка границ сообщений в hex-viewer
+    applyFramingMarks(msgs);
+  }
+
+  function applyFramingMarks(msgs) {
+    if (!current || !current.viewers["a_to_b"]) return;
+    if (!msgs || !msgs.length) {
+      current.viewers["a_to_b"].setMarks([]);
+      return;
+    }
+    const marks = msgs.map((m, i) => ({
+      start: m.offset,
+      end: m.offset + m.length,
+      kind: "msg-" + (i % 5),
+      label: "#" + m.index,
+    }));
+    current.viewers["a_to_b"].setMarks(marks);
   }
 
   function bindFramingActions() {
@@ -610,9 +637,14 @@
       a.addEventListener("click", (e) => {
         e.preventDefault();
         const off = parseInt(a.dataset.off, 10);
+        const len = parseInt(a.dataset.len || "0", 10);
         const viewer = current.viewers["a_to_b"];
-        if (viewer) {
-          viewer.jumpTo(off);
+        if (!viewer) return;
+        viewer.jumpTo(off);
+        if (len > 0) {
+          viewer.flashRange(off, off + len);
+          window.taptuna.toast("сообщение: offset " + off + "–" + (off + len));
+        } else {
           window.taptuna.toast("переход к offset " + off);
         }
       });
@@ -680,7 +712,6 @@
       return;
     }
 
-    // Прячем основной вид, чтобы не было 4 hex-viewer'ов
     streamsRow.hidden = true;
 
     compareRow.hidden = false;
@@ -826,8 +857,6 @@
   // ============================================================
   loadBtn.addEventListener("click", loadSession);
 
-  // Подсказка при смене селекта без клика «Загрузить»
-  // Автозагрузка при смене сессии
   sel.addEventListener("change", () => {
     if (sel.value) loadSession();
   });
@@ -837,7 +866,22 @@
   framingApply.addEventListener("click", applyFraming);
   compareBtn.addEventListener("click", runCompare);
 
-    // --- Фильтр сессий по capture ---
+  // Улучшение 3: кнопки подсветки границ
+  framingHighlight.addEventListener("click", () => {
+    if (!currentFramingResult) return;
+    const msgs = currentFramingResult.messages || [];
+    if (!msgs.length) return;
+    applyFramingMarks(msgs);
+    window.taptuna.toast("подсвечено сообщений: " + msgs.length);
+  });
+
+  framingClear.addEventListener("click", () => {
+    if (!current || !current.viewers["a_to_b"]) return;
+    current.viewers["a_to_b"].setMarks([]);
+    window.taptuna.toast("подсветка снята");
+  });
+
+  // --- Фильтр сессий по capture ---
   function applyCaptureFilter() {
     const capId = captureFilter.value;
     let visibleCount = 0;
@@ -858,7 +902,6 @@
       optgroup.hidden = groupVisible === 0;
     }
 
-    // Сбрасываем выбор, если выбранная сессия скрыта
     if (sel.value) {
       const current = sel.querySelector(`option[value="${sel.value}"]`);
       if (current && current.hidden) {
@@ -875,16 +918,13 @@
 
   captureFilter.addEventListener("change", () => {
     applyCaptureFilter();
-    // Автозагрузка, если уже была выбрана сессия и она видна
     if (sel.value) loadSession();
   });
 
-  // Первичная инициализация: показать количество
   applyCaptureFilter();
 
-    // --- Popup с информацией о байте (для обоих hex-viewer'ов) ---
+  // --- Popup с информацией о байте ---
   let byteInfoPopup = null;
-  let currentDirection = null;  // направление, к которому относится открытый viewer
 
   async function showByteInfo(offset, targetEl, sessionId, direction) {
     if (byteInfoPopup) {
@@ -957,7 +997,7 @@
     byteInfoPopup = null;
   });
 
-    // ============================================================
+  // ============================================================
   // Гипотезы и наблюдения
   // ============================================================
   async function loadHypotheses() {
@@ -1042,7 +1082,7 @@
     }
   });
 
-    // ============================================================
+  // ============================================================
   // Применить интерпретацию к текущей сессии
   // ============================================================
   applyInterpGo.addEventListener("click", async () => {
@@ -1074,7 +1114,6 @@
         byStatus[m.status] = (byStatus[m.status] || 0) + 1;
       }
 
-      // Сводка
       const summaryLine = Object.entries(byStatus)
         .map(([k, v]) => {
           const cls = ["ok", "violation", "ambiguous",
@@ -1085,7 +1124,6 @@
 
       applyInterpInfo.innerHTML = "Сообщений: " + msgs.length + " · " + summaryLine;
 
-      // Таблица сообщений
       if (!msgs.length) {
         applyInterpResult.innerHTML =
           '<p class="muted">Интерпретация не дала результатов на этой сессии.</p>';
@@ -1117,7 +1155,6 @@
       }
       applyInterpResult.innerHTML = html;
 
-      // Клик по offset → прыжок в hex-viewer
       applyInterpResult.querySelectorAll(".apply-jump").forEach((a) => {
         a.addEventListener("click", (e) => {
           e.preventDefault();
@@ -1138,7 +1175,6 @@
     }
   });
 
-  // Сброс результата при смене интерпретации или направления
   applyInterpSelect.addEventListener("change", () => {
     applyInterpResult.innerHTML = "—";
     applyInterpInfo.textContent = "";
