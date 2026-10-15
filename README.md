@@ -37,7 +37,7 @@ sudo dnf install wireshark-cli     # Fedora
 sudo pacman -S wireshark-cli       # Arch
 
 # 2. Скачать и запустить
-wget https://github.com/ILOSman/taptuna/releases/download/v0.1.0/TapTuna-0.1.0-x86_64.AppImage
+wget https://github.com/ILOSman/taptuna/releases/download/v0.1.1/TapTuna-0.1.0-x86_64.AppImage
 chmod +x TapTuna-0.1.0-x86_64.AppImage
 ./TapTuna-0.1.0-x86_64.AppImage
 ```
