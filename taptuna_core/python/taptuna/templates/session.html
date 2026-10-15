@@ -54,12 +54,11 @@
     <h2 style="margin:0">Поток</h2>
     <span class="spacer"></span>
     <span class="muted small" id="hex-info">—</span>
-    <label class="small">offset:
-      <input type="number" id="jump-offset" style="width:110px" value="0" min="0">
-    </label>
-    <button id="jump-btn">Перейти</button>
   </div>
   <div id="hex-view" style="height:600px"></div>
+  <p class="muted small" style="margin-top:0.4rem">
+    Клик по байту — информация о пакете, из которого он пришёл.
+  </p>
 </div>
 
 <div class="card">
@@ -72,14 +71,18 @@
 {% block scripts %}
 <script>
 (function () {
+  "use strict";
+
   const dirSelect = document.getElementById("dir-select");
   const hexRoot = document.getElementById("hex-view");
   const hexInfo = document.getElementById("hex-info");
   const packetsList = document.getElementById("packets-list");
   const jumpOffset = document.getElementById("jump-offset");
   const jumpBtn = document.getElementById("jump-btn");
+
   if (!dirSelect) return;
 
+  // Кеш меты: direction_id -> {direction, gaps, ambiguities, size}
   const dirMeta = {};
   for (const opt of dirSelect.options) {
     dirMeta[opt.value] = {
@@ -91,19 +94,21 @@
   }
 
   let viewer = null;
+  let byteInfoPopup = null;
 
+  // --- Мета-блоки под селектором ---
   function updateMeta() {
     document.querySelectorAll(".dir-meta").forEach((el) => {
       el.style.display = el.dataset.dirId === dirSelect.value ? "block" : "none";
     });
   }
 
+  // --- Загрузка потока ---
   function loadStream() {
     const directionId = dirSelect.value;
     const meta = dirMeta[directionId] || {};
     const size = meta.size || 0;
 
-    // Пустой поток — показываем сообщение вместо пустого hex-окна
     if (size === 0) {
       hexRoot.innerHTML =
         '<p class="muted" style="padding:1rem">' +
@@ -121,7 +126,6 @@
       marks.push({ start: a.offset, end: a.offset + a.length, kind: "amb" });
     }
 
-    // Пересоздаём viewer (проще, чем сбрасывать состояние)
     hexRoot.innerHTML = "";
     viewer = new window.taptuna.HexViewer(hexRoot, {
       sessionId: "{{ session.id }}",
@@ -129,9 +133,7 @@
       projectId: "{{ project_name }}",
       size: size,
       marks: marks,
-      onByteClick: (offset) => {
-        window.taptuna.toast("offset " + offset + " (0x" + offset.toString(16) + ")");
-      },
+      onByteClick: (offset, el) => showByteInfo(offset, el),
     });
 
     hexInfo.textContent =
@@ -140,20 +142,154 @@
       (size > 1024 * 1024 ? " · виртуальный скролл" : "");
   }
 
+  // --- Popup с информацией о байте ---
+  async function showByteInfo(offset, targetEl) {
+    if (byteInfoPopup) {
+      byteInfoPopup.remove();
+      byteInfoPopup = null;
+    }
+
+    const popup = document.createElement("div");
+    popup.className = "byte-popup";
+    popup.innerHTML = '<span class="muted small">загрузка…</span>';
+    document.body.appendChild(popup);
+    byteInfoPopup = popup;
+    positionPopup(popup, targetEl);
+
+    const direction = dirMeta[dirSelect.value].direction;
+    const url = "/api/sessions/{{ session.id }}/byte-info" +
+      "?project_id={{ project_name }}" +
+      "&direction=" + encodeURIComponent(direction) +
+      "&offset=" + offset;
+
+    try {
+      const d = await window.taptuna.api("GET", url);
+
+      if (!d.packet) {
+        popup.innerHTML =
+          '<button class="popup-close" type="button">×</button>' +
+          '<div class="small"><strong>offset</strong> ' +
+          '<span class="mono">' + offset + '</span></div>' +
+          '<div class="muted small">байт не привязан к пакету (gap или край потока)</div>';
+      } else {
+        const pkt = d.packet;
+        const flags = [
+          pkt.flags_syn ? "S" : "",
+          pkt.flags_ack ? "A" : "",
+          pkt.flags_fin ? "F" : "",
+          pkt.flags_rst ? "R" : "",
+        ].filter(Boolean).join("") || "—";
+
+        const inFrame = offset - pkt.stream_offset;
+        popup.innerHTML =
+          '<button class="popup-close" type="button">×</button>' +
+          '<div class="small"><strong>offset</strong> ' +
+          '<span class="mono">' + offset + '</span></div>' +
+          '<div class="small"><strong>frame</strong> ' +
+          '<span class="mono">' + pkt.frame_number + '</span> · ' +
+          'offset в кадре <span class="mono">' + inFrame + '</span>/' +
+          '<span class="mono">' + pkt.tcp_len + '</span></div>' +
+          '<div class="small"><strong>seq</strong> ' +
+          '<span class="mono">' + pkt.abs_seq + '</span> · ' +
+          '<strong>len</strong> ' + pkt.tcp_len + '</div>' +
+          '<div class="small"><strong>flags</strong> ' +
+          '<span class="mono">' + flags + '</span></div>' +
+          '<button class="popup-action" type="button" data-frame="' +
+          pkt.frame_number + '">Показать в пакетах</button>';
+      }
+
+      popup.querySelector(".popup-close").addEventListener("click", () => {
+        popup.remove();
+        byteInfoPopup = null;
+      });
+
+      const actionBtn = popup.querySelector(".popup-action");
+      if (actionBtn) {
+        actionBtn.addEventListener("click", () => {
+          highlightPacket(actionBtn.dataset.frame);
+          popup.remove();
+          byteInfoPopup = null;
+        });
+      }
+    } catch (e) {
+      popup.innerHTML =
+        '<button class="popup-close" type="button">×</button>' +
+        '<span style="color:#c53030">ошибка: ' +
+        window.taptuna.escapeHtml(e.message) + '</span>';
+      popup.querySelector(".popup-close").addEventListener("click", () => {
+        popup.remove();
+        byteInfoPopup = null;
+      });
+    }
+  }
+
+  function positionPopup(popup, targetEl) {
+    const rect = targetEl.getBoundingClientRect();
+    const scrollX = window.scrollX || window.pageXOffset;
+    const scrollY = window.scrollY || window.pageYOffset;
+    popup.style.left = (rect.left + scrollX) + "px";
+    popup.style.top = (rect.bottom + scrollY + 4) + "px";
+
+    // Если popup выходит за правый край — сдвигаем влево
+    const popupWidth = popup.offsetWidth || 240;
+    if (rect.left + popupWidth > window.innerWidth - 10) {
+      popup.style.left = (window.innerWidth - popupWidth - 10 + scrollX) + "px";
+    }
+  }
+
+  function highlightPacket(frameNumber) {
+    const rows = packetsList.querySelectorAll("tr[data-frame]");
+    let found = false;
+    for (const r of rows) {
+      r.classList.remove("packet-flash");
+      if (r.dataset.frame === String(frameNumber)) {
+        r.classList.add("packet-flash");
+        r.scrollIntoView({ behavior: "smooth", block: "center" });
+        setTimeout(() => r.classList.remove("packet-flash"), 2000);
+        found = true;
+      }
+    }
+    if (!found) {
+      window.taptuna.toast("frame " + frameNumber + " не найден в таблице");
+    }
+  }
+
+  // Закрытие popup при клике вне
+  document.addEventListener("click", (e) => {
+    if (!byteInfoPopup) return;
+    if (byteInfoPopup.contains(e.target)) return;
+    if (e.target.classList.contains("byte")) return;
+    byteInfoPopup.remove();
+    byteInfoPopup = null;
+  });
+
+  // Закрытие popup при скролле hex-viewer (popup «привязан» к позиции)
+  hexRoot.addEventListener("scroll", () => {
+    if (byteInfoPopup) {
+      byteInfoPopup.remove();
+      byteInfoPopup = null;
+    }
+  });
+
+  // --- Загрузка пакетов ---
   async function loadPackets() {
     packetsList.textContent = "загрузка...";
     try {
-      const r = await fetch("/api/sessions/{{ session.id }}/packets?project_id={{ project_name }}");
+      const r = await fetch(
+        "/api/sessions/{{ session.id }}/packets?project_id={{ project_name }}"
+      );
       const d = await r.json();
       const packets = d.packets || [];
       if (!packets.length) {
         packetsList.innerHTML = '<p class="muted">Пакетов нет.</p>';
         return;
       }
+
       let html = '<table><thead><tr>' +
         '<th>Frame</th><th>Direction</th><th>Seq</th><th>Len</th>' +
         '<th>Flags</th><th>Offset</th><th>Payload</th>' +
         '</tr></thead><tbody>';
+
       for (const p of packets) {
         const flags = [
           p.flags_syn ? "S" : "",
@@ -161,12 +297,17 @@
           p.flags_fin ? "F" : "",
           p.flags_rst ? "R" : "",
         ].filter(Boolean).join("") || "—";
-        const off = p.stream_offset != null ? p.stream_offset : "—";
-        const sha = p.payload_sha256 ? p.payload_sha256.slice(0, 12) + "…" : "—";
+
         const offCell = p.stream_offset != null
-          ? '<a href="#" class="jump-to" data-off="' + p.stream_offset + '">' + p.stream_offset + '</a>'
+          ? '<a href="#" class="jump-to" data-off="' + p.stream_offset + '">' +
+            p.stream_offset + '</a>'
           : "—";
-        html += '<tr>' +
+
+        const sha = p.payload_sha256
+          ? p.payload_sha256.slice(0, 12) + "…"
+          : "—";
+
+        html += '<tr data-frame="' + p.frame_number + '">' +
           '<td class="mono">' + p.frame_number + '</td>' +
           '<td>' + p.direction_id + '</td>' +
           '<td class="mono">' + p.abs_seq + '</td>' +
@@ -176,9 +317,11 @@
           '<td class="mono small">' + sha + '</td>' +
           '</tr>';
       }
+
       html += "</tbody></table>";
       packetsList.innerHTML = html;
 
+      // Обработчик кликов по offset
       packetsList.querySelectorAll(".jump-to").forEach((a) => {
         a.addEventListener("click", (e) => {
           e.preventDefault();
@@ -194,6 +337,7 @@
     }
   }
 
+  // --- Связки ---
   function refresh() {
     loadStream();
     loadPackets();
@@ -201,11 +345,13 @@
   }
 
   dirSelect.addEventListener("change", refresh);
+
   jumpBtn.addEventListener("click", () => {
     if (!viewer) return;
     const off = parseInt(jumpOffset.value || "0", 10);
     viewer.jumpTo(off);
   });
+
   jumpOffset.addEventListener("keydown", (e) => {
     if (e.key === "Enter") jumpBtn.click();
   });

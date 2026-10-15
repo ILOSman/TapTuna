@@ -295,6 +295,64 @@ def api_capture_sessions(capture_id: int):
     finally:
         conn.close()
 
+@bp.route("/sessions/<int:session_id>/byte-info", methods=["GET"])
+def api_byte_info(session_id: int):
+    """Возвращает информацию о пакете, из которого пришёл байт.
+
+    Query params:
+        project_id
+        direction: a_to_b | b_to_a
+        offset:    offset в reassembled потоке
+
+    Ответ:
+        {
+            "offset": N,
+            "packet": {frame_number, abs_seq, tcp_len, stream_offset,
+                       flags_*, payload_sha256} | null,
+        }
+    """
+    project_id = request.args.get("project_id")
+    direction = request.args.get("direction")
+    offset = int(request.args.get("offset", "0"))
+
+    if not project_id:
+        return _error("MISSING_PROJECT", "'project_id' required")
+    if direction not in ("a_to_b", "b_to_a"):
+        return _error("BAD_DIRECTION", "direction must be a_to_b or b_to_a")
+
+    p = _get_project(project_id)
+    conn = open_db(p)
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id FROM directions WHERE session_id = ? AND direction = ?",
+            (session_id, direction),
+        )
+        drow = cur.fetchone()
+        if drow is None:
+            return _error("DIRECTION_NOT_FOUND", "direction not found", 404)
+        direction_id = drow["id"]
+
+        # Ищем пакет, чей диапазон [stream_offset, stream_offset+tcp_len)
+        # содержит offset.
+        cur.execute(
+            """SELECT frame_number, abs_seq, tcp_len, stream_offset,
+                      flags_syn, flags_ack, flags_fin, flags_rst,
+                      payload_sha256
+               FROM packets
+               WHERE direction_id = ?
+                 AND stream_offset IS NOT NULL
+                 AND stream_offset <= ?
+                 AND stream_offset + tcp_len > ?
+               LIMIT 1""",
+            (direction_id, offset, offset),
+        )
+        row = cur.fetchone()
+        packet = dict(row) if row is not None else None
+        return _ok({"offset": offset, "packet": packet})
+    finally:
+        conn.close()
+
 @bp.route("/captures/<int:capture_id>/packets/<int:frame>", methods=["GET"])
 def api_point_lookup_packet(capture_id: int, frame: int):
     """Быстрый поиск пакета по номеру кадра.
@@ -511,7 +569,12 @@ def api_session_packets(session_id: int):
         directions = get_directions(conn, session_id)
         all_packets: list[dict] = []
         for d in directions:
-            all_packets.extend(get_packets(conn, d["id"]))
+            for pkt in get_packets(conn, d["id"]):
+                # payload_inline — BLOB (bytes), Flask 3.x не сериализует его
+                # в JSON. Заменяем на длину + sha256 (клиенту этого достаточно).
+                inline = pkt.pop("payload_inline", None)
+                pkt["payload_inline_len"] = len(inline) if inline is not None else 0
+                all_packets.append(pkt)
         all_packets.sort(key=lambda x: x["frame_number"])
         return _ok({"packets": all_packets})
     finally:
@@ -652,6 +715,15 @@ def api_add_interpretation(project_id: str):
     fields = json.dumps(fields_obj or {})
     constraints = json.dumps(constraints_obj or [])
     semantics = json.dumps(semantics_obj or {})
+
+    # Базовая валидация: framing обязателен и должен содержать 'kind'
+    if not framing_obj or not isinstance(framing_obj, dict) or "kind" not in framing_obj:
+        return _error(
+            "BAD_FRAMING",
+            "framing spec must be a dict with 'kind' field; "
+            "проверьте YAML или передайте framing явно",
+            details={"framing": framing_obj},
+        )
 
     conn = open_db(p)
     try:

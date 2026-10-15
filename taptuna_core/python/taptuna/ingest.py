@@ -235,10 +235,15 @@ def _parse_line(line: str) -> Optional[TsharkRow]:
         seq = int(parts[7]) if parts[7] else 0
         ack = int(parts[8]) if parts[8] else 0
         tcp_len = int(parts[9]) if parts[9] else 0
-        syn = parts[10] == "1"
-        ack_flag = parts[11] == "1"
-        fin = parts[12] == "1"
-        rst = parts[13] == "1"
+        # tshark возвращает флаги как "True"/"False" (новые версии)
+        # или "1"/"0" (старые). Обрабатываем оба варианта.
+        def _flag(v: str) -> bool:
+            return v in ("1", "True", "true")
+
+        syn = _flag(parts[10])
+        ack_flag = _flag(parts[11])
+        fin = _flag(parts[12])
+        rst = _flag(parts[13])
         payload_hex = parts[14]
         payload = bytes.fromhex(payload_hex.replace(":", "")) if payload_hex else b""
     except (ValueError, IndexError):

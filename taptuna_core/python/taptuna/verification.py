@@ -41,10 +41,10 @@ def _noop_progress(_msg: str, _frac: float) -> None:
 STATUS_ORDER = {
     "not_applicable": 0,
     "ok": 1,
+    "unknown_frame": 2,   # трактуем как ok-подобный (не влияет на вердикт)
     "incomplete": 2,
     "ambiguous": 3,
     "violation": 4,
-    "unknown_frame": 1,   # трактуем как ok-подобный (не влияет на вердикт)
 }
 
 
@@ -238,8 +238,10 @@ def classify_message(
         return "ambiguous"
     if extract_failed or msg_status == "partial":
         return "incomplete"
-    if msg_status in ("no_match", "unknown_frame"):
+    if msg_status == "no_match":
         return "not_applicable"
+    if msg_status == "unknown_frame":
+        return "unknown_frame"
     if has_gap:
         return "incomplete"
     return "ok"
@@ -395,6 +397,22 @@ def verify_corpus(
                         message_name=interpreter.name,
                         status=MessageStatus.UNKNOWN_FRAME,
                         notes=[f"interpreter error: {type(e).__name__}: {e}"],
+                    )]
+
+                                # Если интерпретатор вернул 0 сообщений на непустом потоке —
+                # это «неизвестный участок». Записываем один результат на
+                # весь поток, чтобы он попал в §6 отчёта.
+                if not msgs and stream:
+                    msgs = [MessageResult(
+                        index=0,
+                        stream_offset=0,
+                        length=len(stream),
+                        message_name=interpreter.name,
+                        status=MessageStatus.UNKNOWN_FRAME,
+                        notes=[
+                            "framing did not match any message on this stream; "
+                            f"stream length = {len(stream)} bytes"
+                        ],
                     )]
 
                 ambiguities = json.loads(direction["ambiguities_json"] or "[]")

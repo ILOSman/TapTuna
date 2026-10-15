@@ -62,19 +62,18 @@ def main() -> int:
     from taptuna.examples.generate import build_session
     from scapy.all import wrpcap
 
-    pcap_tmp = project / "_tmp.pcap"
+    pcap_src = project / "demo.pcap"
     pkts = build_session()
-    wrpcap(str(pcap_tmp), pkts)
+    wrpcap(str(pcap_src), pkts)
 
-    # 3. Ingest
     print("[3/7] ingest")
     ingest_result = ingest_capture(
         project_dir=project,
-        input_path=pcap_tmp,
+        input_path=pcap_src,
         no_copy=False,
         progress=lambda msg, frac: None,
     )
-    pcap_tmp.unlink()
+    pcap_src.unlink()
     print(f"      capture_id={ingest_result['capture_id']} "
           f"sessions={ingest_result['sessions']} packets={ingest_result['packets']}")
 

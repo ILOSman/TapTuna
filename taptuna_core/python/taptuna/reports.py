@@ -298,11 +298,14 @@ def _render_markdown_fallback(data: dict[str, Any], model: dict[str, Any]) -> st
     L.append("## 3. Корпус\n")
     L.append(f"- **Название:** `{corpus['name']}`")
     L.append(f"- **Критерии:** `{corpus['criteria_json']}`\n")
-    L.append("Записи:\n")
+    L.append("Записи (все captures проекта):\n")
     for c in data["captures"]:
         L.append(f"- `{c['sha256'][:16]}…` — `{c['filename']}` "
                  f"({c['packet_count']} пакетов)")
     L.append("")
+    L.append(f"**Примечание:** в разделе перечислены все captures проекта. "
+             f"Корпус `{corpus['name']}` применяется к сессиям, "
+             f"удовлетворяющим критериям `{corpus['criteria_json']}`.\n")
 
     # 4. Проверенные примеры
     L.append("## 4. Проверенные примеры\n")
@@ -352,13 +355,33 @@ def _render_markdown_fallback(data: dict[str, Any], model: dict[str, Any]) -> st
              f"успешно разобраны\n")
 
     # 9. Гипотезы (отдельно от правил)
-    L.append("## 9. Гипотезы (отдельно от правил)\n")
+    # 9. Гипотезы и наблюдения (отдельно от правил)
+    L.append("## 9. Гипотезы и наблюдения (отдельно от правил)\n")
+    L.append("**Гипотезы** — предположения о смысле данных:\n")
     if data["hypotheses"]:
         for h in data["hypotheses"]:
             L.append(f"- [{h['status']}] {h['formulation']}")
         L.append("")
     else:
         L.append("_Гипотезы не зафиксированы._\n")
+
+    L.append("**Наблюдения** — факты, связанные с конкретными байтами:\n")
+    if data.get("observations"):
+        for o in data["observations"]:
+            target = o.get("target_type", "?")
+            tid = o.get("target_id", "?")
+            desc = o.get("description", "")
+            byte_range = ""
+            if o.get("byte_range_start") is not None:
+                byte_range = f" (offset {o['byte_range_start']}"
+                if (o.get("byte_range_end") is not None
+                        and o["byte_range_end"] != o["byte_range_start"]):
+                    byte_range += f"–{o['byte_range_end']}"
+                byte_range += ")"
+            L.append(f"- [{target} #{tid}]{byte_range} {desc}")
+        L.append("")
+    else:
+        L.append("_Наблюдения не зафиксированы._\n")
 
     # 10. Checksum offloading
     L.append("## 10. Предупреждение о checksum offloading\n")

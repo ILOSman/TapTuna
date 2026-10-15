@@ -29,6 +29,7 @@
       <th data-sort="packets_a2b">Пакеты (→/←)</th>
       <th data-sort="bytes_a2b">Байты (→/←)</th>
       <th>SYN</th>
+      <th>FIN</th>
       <th data-sort="start_time">Начало</th>
     </tr>
   </thead>
@@ -46,6 +47,7 @@
       <td>{{ s.packets_a2b }} / {{ s.packets_b2a }}</td>
       <td>{{ s.bytes_a2b }} / {{ s.bytes_b2a }}</td>
       <td>{% if s.roles_established %}<span class="status ok">да</span>{% else %}<span class="muted">—</span>{% endif %}</td>
+      <td>{% if s.has_fin %}<span class="status ok">да</span>{% else %}<span class="muted">—</span>{% endif %}</td>
       <td class="small">{{ "%.3f"|format(s.start_time) }}</td>
     </tr>
     {% endfor %}

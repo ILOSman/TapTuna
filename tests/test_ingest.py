@@ -27,7 +27,13 @@ from taptuna.ingest import (
 def _make_tsv_line(*, stream=0, frame=1, ts=1700000000.0,
                    ip_src="10.0.0.1", ip_dst="10.0.0.2",
                    sport=1234, dport=80, seq=1000, ack=0, tcp_len=5,
-                   syn=0, ack_f=0, fin=0, rst=0, payload="48656c6c6f"):
+                   syn="False", ack_f="False", fin="False", rst="False",
+                   payload="48656c6c6f"):
+    """Собирает TSV-строку в формате tshark 4.x.
+
+    Флаги передаются строками: "True"/"False" (новые версии tshark)
+    или "1"/"0" (старые). По умолчанию — "False".
+    """
     parts = [
         str(stream), str(frame), str(ts), ip_src, ip_dst,
         str(sport), str(dport), str(seq), str(ack), str(tcp_len),
@@ -62,14 +68,41 @@ def test_parse_line_empty_string():
     assert _parse_line("") is None
 
 
+def test_parse_line_flags_true_false():
+    """tshark 4.x возвращает флаги как строки 'True'/'False'."""
+    line = _make_tsv_line(syn="True", ack_f="True",
+                          fin="False", rst="False")
+    row = _parse_line(line)
+    assert row is not None
+    assert row.syn is True
+    assert row.ack_flag is True
+    assert row.fin is False
+    assert row.rst is False
+
+
+def test_parse_line_flags_one_zero():
+    """Старые версии tshark возвращают '1'/'0'."""
+    line = _make_tsv_line(syn="1", ack_f="1", fin="0", rst="0")
+    row = _parse_line(line)
+    assert row is not None
+    assert row.syn is True
+    assert row.ack_flag is True
+    assert row.fin is False
+    assert row.rst is False
+
+
 # ---------------------------------------------------------------------------
 # group_by_stream
 # ---------------------------------------------------------------------------
 
 def test_group_by_stream_single():
+    """SYN без ACK → roles_established, syn_frame=1."""
     rows = [
-        _parse_line(_make_tsv_line(frame=1, seq=1000, tcp_len=0, syn=1, payload="")),
-        _parse_line(_make_tsv_line(frame=2, seq=1001, tcp_len=5, payload="48656c6c6f")),
+        _parse_line(_make_tsv_line(frame=1, seq=1000, tcp_len=0,
+                                    syn="True", ack_f="False", payload="")),
+        _parse_line(_make_tsv_line(frame=2, seq=1001, tcp_len=5,
+                                    syn="False", ack_f="True",
+                                    payload="48656c6c6f")),
     ]
     sessions = group_by_stream([r for r in rows if r is not None])
     assert len(sessions) == 1
@@ -77,6 +110,20 @@ def test_group_by_stream_single():
     assert s.stream_index == 0
     assert s.syn_frame == 1
     assert s.roles_established is True
+
+
+def test_group_by_stream_syn_ack_not_establishing():
+    """SYN+ACK (ответ сервера) не устанавливает роли — роли ставит клиентский SYN."""
+    rows = [
+        _parse_line(_make_tsv_line(frame=2, seq=5000, tcp_len=0,
+                                    syn="True", ack_f="True", payload="")),
+    ]
+    sessions = group_by_stream([r for r in rows if r is not None])
+    assert len(sessions) == 1
+    s = sessions[0]
+    # syn_frame не выставлен: syn=True, но ack_flag=True
+    assert s.syn_frame is None
+    assert s.roles_established is False
 
 
 def test_group_by_stream_multiple():
@@ -165,8 +212,11 @@ def test_run_tshark_single_call(tmp_path, monkeypatch):
 def test_ingest_single_tshark_call(tmp_path, monkeypatch):
     """Полный ingest_capture: tshark вызывается один раз на файл."""
     out = [
-        _make_tsv_line(frame=1, seq=1000, tcp_len=0, syn=1, payload=""),
-        _make_tsv_line(frame=2, seq=1001, tcp_len=5, payload="48656c6c6f"),
+        _make_tsv_line(frame=1, seq=1000, tcp_len=0,
+                       syn="True", ack_f="False", payload=""),
+        _make_tsv_line(frame=2, seq=1001, tcp_len=5,
+                       syn="False", ack_f="True",
+                       payload="48656c6c6f"),
     ]
     script, counter = _make_fake_tshark(tmp_path, out)
 

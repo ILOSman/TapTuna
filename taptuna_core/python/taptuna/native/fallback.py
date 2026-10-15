@@ -39,12 +39,11 @@ def _to_rust_segment(d: dict) -> dict:
         "data": bytes(d["data"]),
     }
 
-
 def reassemble_py(
     segments: list[dict],
-    syn_seq: Optional[int],
-    overlap_policy: str,
-    max_stream_bytes: Optional[int],
+    syn_seq: Optional[int] = None,
+    overlap_policy: str = "first_wins",
+    max_stream_bytes: Optional[int] = None,
 ) -> dict:
     segs = [_to_rust_segment(s) for s in segments]
     segs = [s for s in segs if s["len"] > 0]

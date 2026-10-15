@@ -127,7 +127,8 @@ semantics: {}
           name: name,
           kind: newKind.value,
           source_yaml: src,
-          framing: {}, fields: {}, constraints: [], semantics: {},
+          // framing/fields/constraints/semantics не отправляем —
+          // сервер распарсит их из YAML
         }),
       });
       const d = await r.json();

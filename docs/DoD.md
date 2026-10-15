@@ -15,18 +15,24 @@ Rust 1.85.
 | R1 | Одинаковые повторные передачи | `cargo test` в `reassembly.rs` | ✅ |
 | R1 | Возврат к пакетам | UI `/sessions/<id>` → offset → jump | ✅ |
 | R1 | Неполнота и неоднозначность явно | `gaps`, `ambiguities` в hex-viewer | ✅ |
-| R2 | Поиск по действию | `action_log.find_sessions_in_window` | ✅ |
-| R2 | Сравнение примеров | `/research` side-by-side двух направлений | ✅ |
+| R1 | Клик по байту → frame источника | popup в `session.html` | ✅ |
+| R2 | Поиск по действию | UI `/action-log` → «Связать с сессиями» | ✅ |
+| R2 | Сравнение примеров | side-by-side двух сессий в `/research` | ✅ |
 | R2 | Исследование границ сообщений | framing-tool в `/research` | ✅ |
+| R2 | Применение интерпретаций из UI | панель «Применить» на `/research` | ✅ |
 | R3 | Декларативная модель | `interpreters/declarative.py` | ✅ |
 | R3 | Script (sandbox) | `interpreters/script_sandbox.py` | ✅ |
 | R3 | Программное применение | `interp-apply`, `POST /api/interpretations/<id>/apply` | ✅ |
 | R3 | Правило отделено от гипотезы | `verification_results` vs `hypotheses` | ✅ |
+| R3 | Гипотезы и наблюдения с привязкой к данным | UI `/research` + §9 отчёта | ✅ |
 | R4 | Выбор корпуса | `CorpusCriteria` | ✅ |
 | R4 | Результаты с переходом к данным | UI `/verification` → run → results | ✅ |
 | R4 | Противоречия видны | `status: violation` | ✅ |
 | R4 | Повторная проверка после изменения | новая версия интерпретации → новый run | ✅ |
 | R4 | Сводка учитывает весь набор | `summary_json` + `verdict` | ✅ |
+| R4 | Переход от результата verify к байтам | ссылка «→ байты» в `/verification` | ✅ |
+| R4 | Контрпримеры видны | §5 отчёта (`violation`/`ambiguous`) | ✅ |
+| R4 | Неизвестные участки видны | §6 отчёта (`incomplete`/`unknown_frame`) | ✅ |
 | R4 | Условия фильтрации доступны | `status` query param | ✅ |
 | R5 | Сохранение всего в проекте | структура каталога | ✅ |
 | R5 | Перенос в другой каталог | `tests/test_portability.py` (4 passed) | ✅ |
@@ -35,6 +41,7 @@ Rust 1.85.
 | R6 | Машиночитаемая интерпретация | `machine_model.json` | ✅ |
 | R6 | Примеры + ожидаемые | `examples/` + `make test-examples` | ✅ |
 | R6 | Инструкция повторного применения | `docs/REUSE.md` | ✅ |
+| R6 | Гипотезы отдельно от правил | §9 отчёта | ✅ |
 
 ## 2. Нефункциональные требования (§10)
 
@@ -131,16 +138,25 @@ JSON-файлы `dhat-heap-<N>MiB.json` открываются в
 
 | Набор | Команда | Результат |
 |---|---|---|
-| Rust unit | `cargo test` (lib) | 18 passed |
+| Rust unit | `cargo test --lib` | 18 passed |
 | Rust cross-check | `cargo test --test cross_check` | 1 passed |
 | Rust property | `cargo test --test property` | 4 passed |
-| Rust всего | `cargo test` | **23 passed** |
+| **Rust всего** | `cargo test` | **23 passed** |
 | Rust bench | `cargo bench --no-run` | ✅ |
-| Python | `make test-python` | 36 passed |
+| Python unit | `pytest tests/ -v` | **49 passed** |
 | Cross-validation | `pytest tests/test_cross_validation.py` | 4 passed |
-| E2E | `make test-examples` | ALL OK |
 | Portability | `pytest tests/test_portability.py` | 4 passed |
-| Fallback | `TAPTUNA_NATIVE=0 pytest ...` | 36 passed |
+| Reports | `pytest tests/test_reports.py` | 6 passed |
+| Interpretations | `pytest tests/test_interpretations_validation.py` | 5 passed |
+| Sandbox | `pytest tests/test_sandbox.py` | 7 passed |
+| Ingest | `pytest tests/test_ingest.py` | 9 passed |
+| Store | `pytest tests/test_store.py` | 7 passed |
+| Manifest | `pytest tests/test_manifest.py` | 5 passed |
+| Verify profile | `pytest tests/test_verify_profile.py` | 2 passed |
+| E2E | `make test-examples` | ALL OK |
+| Fallback | `TAPTUNA_NATIVE=0 pytest tests/` | 49 passed |
+
+**Итог:** 23 Rust + 49 Python = **72 теста**, все зелёные.
 
 ## 6. CI: сборка колёс
 
@@ -161,7 +177,8 @@ GitHub Actions workflow `.github/workflows/wheels.yml`.
 - Merge нескольких PCAP — не поддерживается.
 - Checksum-поля могут быть некорректны при локальном захвате (offloading).
 - Script-sandbox: CPU 10 с, память 512 MiB, wall-clock 5 с на сообщение.
-- `macos-13` (Intel) исключён из CI — queue starvation на GitHub.
+- `macos-13` (Intel) исключён из CI — queue starvation на GitHub;
+  доступен `macos-14` (arm64) + Linux x86_64/arm64 (glibc/musl) + Windows.
 
 ## 8. Как воспроизвести этот документ
 

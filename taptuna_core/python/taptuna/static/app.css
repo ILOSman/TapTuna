@@ -105,6 +105,11 @@ table tr:hover td { background: #fbfbfd; }
 .status.overlap { background: #fef3c7; color: var(--warn); }
 .status.gap_before { background: #e0e7ff; color: var(--info); }
 
+.status.open { background: #e0e7ff; color: #3182ce; }
+.status.supported { background: #e6f4ea; color: #2f855a; }
+.status.refuted { background: #fdecea; color: #c53030; }
+.status.superseded { background: #f0f0f0; color: #6a6a6a; }
+
 /* Hex viewer */
 .hex {
   font-family: var(--mono); font-size: 12px;
@@ -233,4 +238,40 @@ table tr:hover td { background: #fbfbfd; }
 @keyframes byte-flash {
   0%   { background: #ffe066; }
   100% { background: #ffe066; }
+}
+
+.byte-popup {
+  position: absolute;
+  z-index: 300;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.15);
+  padding: 0.6rem 1.8rem 0.6rem 0.9rem;
+  min-width: 220px;
+  font-size: 13px;
+  line-height: 1.4;
+}
+.byte-popup .popup-close {
+  position: absolute;
+  top: 2px;
+  right: 4px;
+  background: none;
+  border: none;
+  font-size: 1rem;
+  cursor: pointer;
+  color: var(--muted);
+  padding: 0 0.3rem;
+}
+.byte-popup .popup-close:hover {
+  color: var(--fg);
+}
+.byte-popup .popup-action {
+  margin-top: 0.4rem;
+  font-size: 12px;
+  padding: 0.25rem 0.5rem;
+}
+.packet-flash {
+  background: #fff3c7 !important;
+  transition: background 0.3s;
 }

@@ -59,7 +59,12 @@ def sessions():
                        s.start_time, s.end_time,
                        s.packets_a2b, s.packets_b2a,
                        s.bytes_a2b, s.bytes_b2a,
-                       c.filename AS capture_name
+                       c.filename AS capture_name,
+                       EXISTS(
+                           SELECT 1 FROM packets p
+                           JOIN directions d ON d.id = p.direction_id
+                           WHERE d.session_id = s.id AND p.flags_fin = 1
+                       ) AS has_fin
                 FROM sessions s
                 JOIN captures c ON c.id = s.capture_id
                 ORDER BY s.id
@@ -101,27 +106,53 @@ def session_detail(session_id: int):
     return render_template("session.html", project_name=p.name,
                            session=session, directions=directions)
 
-
 @bp.route("/research")
 def research():
     p = _project()
+    captures = []
     sessions_list = []
+    interps = []
     try:
         conn = _db()
         try:
             cur = conn.cursor()
-            cur.execute("""SELECT id, ip_src, ip_dst, port_src, port_dst,
-                                  stream_index, packets_a2b, packets_b2a,
-                                  bytes_a2b, bytes_b2a
-                           FROM sessions ORDER BY id""")
+
+            # Список captures с количеством сессий
+            cur.execute("""
+                SELECT c.id, c.filename, c.sha256, c.packet_count,
+                       COUNT(s.id) AS sessions_count
+                FROM captures c
+                LEFT JOIN sessions s ON s.capture_id = c.id
+                GROUP BY c.id
+                ORDER BY c.id
+            """)
+            captures = [dict(r) for r in cur.fetchall()]
+
+            # Сессии с capture_id, чтобы Jinja могла сгруппировать
+            cur.execute("""SELECT s.id, s.capture_id,
+                                  s.ip_src, s.ip_dst, s.port_src, s.port_dst,
+                                  s.stream_index, s.packets_a2b, s.packets_b2a,
+                                  s.bytes_a2b, s.bytes_b2a,
+                                  c.filename AS capture_name
+                           FROM sessions s
+                           JOIN captures c ON c.id = s.capture_id
+                           ORDER BY s.capture_id, s.id""")
             sessions_list = [dict(r) for r in cur.fetchall()]
+
+            # Интерпретации для панели «Применить»
+            cur.execute("""SELECT id, name, version, kind
+                           FROM interpretations
+                           ORDER BY name, version DESC""")
+            interps = [dict(r) for r in cur.fetchall()]
         finally:
             conn.close()
     except Exception:
         pass
-    return render_template("research.html", project_name=p.name,
-                           sessions=sessions_list)
-
+    return render_template("research.html",
+                           project_name=p.name,
+                           captures=captures,
+                           sessions=sessions_list,
+                           interpretations=interps)
 
 @bp.route("/interpretations")
 def interpretations():

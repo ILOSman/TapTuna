@@ -31,7 +31,14 @@ pub fn create_module(py: Python<'_>) -> PyResult<Bound<'_, PyModule>> {
 }
 
 fn parse_strategy(d: &Bound<'_, PyDict>) -> PyResult<FramingStrategy> {
-    let kind: String = d.get_item("kind")?.unwrap().extract()?;
+    let kind: String = d
+        .get_item("kind")?
+        .ok_or_else(|| {
+            pyo3::exceptions::PyValueError::new_err(
+                "framing spec must contain 'kind' field",
+            )
+        })?
+        .extract()?;
     let max_message: usize = d
         .get_item("max_message")?
         .map(|v| v.extract())
@@ -58,7 +65,14 @@ fn parse_strategy(d: &Bound<'_, PyDict>) -> PyResult<FramingStrategy> {
             max_message,
         },
         "delimiter" => FramingStrategy::Delimiter {
-            delim: d.get_item("delim")?.unwrap().extract()?,
+            delim: d
+                .get_item("delim")?
+                .ok_or_else(|| {
+                    pyo3::exceptions::PyValueError::new_err(
+                        "delimiter framing requires 'delim' field",
+                    )
+                })?
+                .extract()?,
             include_delim: d
                 .get_item("include_delim")?
                 .map(|v| v.extract())
@@ -67,11 +81,25 @@ fn parse_strategy(d: &Bound<'_, PyDict>) -> PyResult<FramingStrategy> {
             max_message,
         },
         "fixed" => FramingStrategy::Fixed {
-            size: d.get_item("size")?.unwrap().extract()?,
+            size: d
+                .get_item("size")?
+                .ok_or_else(|| {
+                    pyo3::exceptions::PyValueError::new_err(
+                        "fixed framing requires 'size' field",
+                    )
+                })?
+                .extract()?,
             max_message,
         },
         "regex" => FramingStrategy::Regex {
-            pattern: d.get_item("pattern")?.unwrap().extract()?,
+            pattern: d
+                .get_item("pattern")?
+                .ok_or_else(|| {
+                    pyo3::exceptions::PyValueError::new_err(
+                        "regex framing requires 'pattern' field",
+                    )
+                })?
+                .extract()?,
             include_match: d
                 .get_item("include_match")?
                 .map(|v| v.extract())

@@ -35,11 +35,13 @@ tshark -r <file> -T fields \
 - **Название:** `{{ corpus.name }}`
 - **Критерии:** `{{ corpus.criteria_json }}`
 
-Записи:
+Записи (все captures проекта):
 
 {% for c in captures %}
 - `{{ c.sha256[:16] }}…` — `{{ c.filename }}` ({{ c.packet_count }} пакетов)
 {% endfor %}
+
+**Примечание:** в разделе перечислены все captures проекта. Корпус `{{ corpus.name }}` применяется к сессиям, удовлетворяющим критериям `{{ corpus.criteria_json }}`.
 
 ## 4. Проверенные примеры
 
@@ -81,7 +83,9 @@ _Неизвестные участки отсутствуют._
 - Контрпримеры: {{ counterexamples | length }} сообщений нарушили правила
 - Проверенные примеры: {{ verified_examples | length }} успешно разобраны
 
-## 9. Гипотезы (отдельно от правил)
+## 9. Гипотезы и наблюдения (отдельно от правил)
+
+**Гипотезы** — предположения о смысле данных:
 
 {% if hypotheses %}
 {% for h in hypotheses %}
@@ -89,6 +93,16 @@ _Неизвестные участки отсутствуют._
 {% endfor %}
 {% else %}
 _Гипотезы не зафиксированы._
+{% endif %}
+
+**Наблюдения** — факты, связанные с конкретными байтами:
+
+{% if observations %}
+{% for o in observations %}
+- [{{ o.target_type }} #{{ o.target_id }}]{% if o.byte_range_start is not none %} (offset {{ o.byte_range_start }}{% if o.byte_range_end is not none and o.byte_range_end != o.byte_range_start %}–{{ o.byte_range_end }}{% endif %}){% endif %} {{ o.description }}
+{% endfor %}
+{% else %}
+_Наблюдения не зафиксированы._
 {% endif %}
 
 ## 10. Предупреждение о checksum offloading
