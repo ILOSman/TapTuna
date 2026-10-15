@@ -1,65 +1,95 @@
+# =============================================================
 # Python
+# =============================================================
 __pycache__/
 *.py[cod]
-*.so
-*.egg-info/
+*.pyo
+*.pyd
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
-build/
-dist/
+*.egg-info/
+.eggs/
 .venv/
 venv/
+env/
 
+# =============================================================
 # Rust
+# =============================================================
 target/
-taptuna_core/target/
-taptuna_core/dist/
+Cargo.lock
 taptuna_core/python/taptuna/_native*.so
 taptuna_core/python/taptuna/_native*.abi3.so
 
+# =============================================================
+# Build / dist (только в корне и в taptuna_core)
+# =============================================================
+/build/
+/dist/
+/taptuna_core/build/
+/taptuna_core/dist/
+
+# =============================================================
 # Node / Electron
+# =============================================================
 node_modules/
 electron/node_modules/
 electron/dist/
 electron/bin/taptuna-server
 *.log
+npm-debug.log*
+.npm/
 
-# Проекты пользователя (не коммитить)
-examples/demo_project/
+# =============================================================
+# Пользовательские данные TapTuna
+# =============================================================
 TapTuna/
-~/TapTuna/
-
-# Generated fixtures
-taptuna_core/python/taptuna/examples/input/
-taptuna_core/python/taptuna/examples/expected/
-taptuna_core/python/taptuna/examples/interp.yaml
-taptuna_core/python/taptuna/examples/corpus.yaml
 examples/demo_project/
 
-# PCAP в корне (локальные тестовые файлы)
+# =============================================================
+# Генерируемые фикстуры E2E
+# =============================================================
+taptuna_core/python/taptuna/examples/input/
+# expected/, interp.yaml, corpus.yaml — оставляем в git как эталоны
+
+# =============================================================
+# Локальные PCAP в корне (тестовые, не для всех)
+# =============================================================
 /*.pcap
 
-# IDE
-.idea/
-.vscode/
-*.swp
-
-# OS
-.DS_Store
-Thumbs.db
-
-AGENTS.md
-check_ingest.sh
-config.py
-
-# IDE
-.vscode/
-.idea/
-*.swp
-
-# Специфичное
+# =============================================================
+# Специфичное для репозитория
+# =============================================================
 *.taptuna.zip
 report_run*_*.md
 report_run*_*.html
 report_run*_*.machine_model.json
+
+# =============================================================
+# Локальные скрипты разработчика
+# =============================================================
+AGENTS.md
+check_ingest.sh
+/config.py
+
+# =============================================================
+# IDE
+# =============================================================
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# =============================================================
+# OS
+# =============================================================
+.DS_Store
+Thumbs.db
+
+# =============================================================
+# Временные файлы
+# =============================================================
+*.bak
+*.tmp
+*.part

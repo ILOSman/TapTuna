@@ -1,0 +1,30 @@
+name: demo_length_prefix
+kind: declarative
+framing:
+  kind: length_prefix
+  prefix_bytes: 2
+  big_endian: true
+  length_includes_prefix: false
+  max_message: 65536
+fields:
+  name: message
+  fields:
+    - name: len
+      type: u16be
+      offset: auto
+      size: 2
+    - name: payload
+      type: bytes
+      offset: auto
+      size:
+        from_field: len
+constraints:
+  - op: le
+    a: {op: field, name: len}
+    b: {op: const, value: 65535}
+semantics:
+  fields:
+    len:
+      meaning: "Длина payload в байтах"
+    payload:
+      meaning: "Прикладные данные"

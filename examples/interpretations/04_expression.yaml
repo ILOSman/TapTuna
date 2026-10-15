@@ -1,0 +1,51 @@
+name: demo_expression
+kind: declarative
+framing:
+  kind: fixed
+  size: 6
+  max_message: 1024
+fields:
+  name: sensor
+  fields:
+    - name: temp_raw
+      type: i16be
+      offset: 0
+      size: 2
+    - name: humidity_raw
+      type: u16be
+      offset: 2
+      size: 2
+    - name: magic
+      type: u16be
+      offset: 4
+      size: 2
+    - name: temp
+      type: expression
+      expr:
+        op: floordiv
+        a: {op: field, name: temp_raw}
+        b: {op: const, value: 10}
+    - name: humidity
+      type: expression
+      expr:
+        op: floordiv
+        a: {op: field, name: humidity_raw}
+        b: {op: const, value: 10}
+constraints:
+  - op: and
+    a:
+      op: ge
+      a: {op: field, name: temp}
+      b: {op: const, value: -40}
+    b:
+      op: le
+      a: {op: field, name: temp}
+      b: {op: const, value: 85}
+semantics:
+  fields:
+    temp:
+      meaning: "Температура в °C"
+    humidity:
+      meaning: "Влажность в %"
+    magic:
+      meaning: "Идентификатор протокола"

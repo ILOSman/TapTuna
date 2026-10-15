@@ -1,0 +1,18 @@
+name: demo_fixed
+kind: declarative
+framing:
+  kind: fixed
+  size: 13
+  max_message: 1024
+fields:
+  name: message
+  fields:
+    - name: raw
+      type: bytes
+      offset: 0
+      size: 13
+constraints: []
+semantics:
+  fields:
+    raw:
+      meaning: "Тело сообщения, 13 байт"
