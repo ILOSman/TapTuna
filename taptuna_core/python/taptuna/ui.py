@@ -98,7 +98,18 @@ def session_detail(session_id: int):
                                   gaps_json, ambiguities_json
                            FROM directions WHERE session_id = ?
                            ORDER BY direction""", (session_id,))
-            directions = [dict(r) for r in cur.fetchall()]
+            directions = []
+            for r in cur.fetchall():
+                d = dict(r)
+                try:
+                    d["gaps_count"] = len(json.loads(d.get("gaps_json") or "[]"))
+                except Exception:
+                    d["gaps_count"] = 0
+                try:
+                    d["ambiguities_count"] = len(json.loads(d.get("ambiguities_json") or "[]"))
+                except Exception:
+                    d["ambiguities_count"] = 0
+                directions.append(d)
         finally:
             conn.close()
     except FileNotFoundError:

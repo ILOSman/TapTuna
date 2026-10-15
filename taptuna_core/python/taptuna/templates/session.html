@@ -31,7 +31,8 @@
               data-gaps='{{ d.gaps_json|safe }}'
               data-ambiguities='{{ d.ambiguities_json|safe }}'
               data-size="{{ d.reassembled_bytes }}">
-        {{ d.direction }} ({{ d.reassembled_bytes }} байт, gaps={{ d.gaps_json|length }}, overlap={{ d.ambiguities_json|length }})
+        {{ d.direction }} ({{ d.reassembled_bytes }} байт,
+          gaps={{ d.gaps_count }}, overlap={{ d.ambiguities_count }})
       </option>
       {% endfor %}
     </select>
@@ -230,7 +231,6 @@
     popup.style.left = (rect.left + scrollX) + "px";
     popup.style.top = (rect.bottom + scrollY + 4) + "px";
 
-    // Если popup выходит за правый край — сдвигаем влево
     const popupWidth = popup.offsetWidth || 240;
     if (rect.left + popupWidth > window.innerWidth - 10) {
       popup.style.left = (window.innerWidth - popupWidth - 10 + scrollX) + "px";
@@ -263,7 +263,7 @@
     byteInfoPopup = null;
   });
 
-  // Закрытие popup при скролле hex-viewer (popup «привязан» к позиции)
+  // Закрытие popup при скролле hex-viewer
   hexRoot.addEventListener("scroll", () => {
     if (byteInfoPopup) {
       byteInfoPopup.remove();
@@ -321,7 +321,6 @@
       html += "</tbody></table>";
       packetsList.innerHTML = html;
 
-      // Обработчик кликов по offset
       packetsList.querySelectorAll(".jump-to").forEach((a) => {
         a.addEventListener("click", (e) => {
           e.preventDefault();
@@ -356,7 +355,48 @@
     if (e.key === "Enter") jumpBtn.click();
   });
 
+  // --- Query params из /verification: ?offset=N&length=L&direction=a_to_b ---
+  const params = new URLSearchParams(window.location.search);
+  const qOffset = params.get("offset");
+  const qLength = params.get("length");
+  const qDirection = params.get("direction");
+
+  if (qDirection) {
+    for (const opt of dirSelect.options) {
+      if (opt.dataset.dir === qDirection) {
+        dirSelect.value = opt.value;
+        break;
+      }
+    }
+  }
+
+  // Обновить поле offset в UI
+  if (qOffset !== null) {
+    jumpOffset.value = qOffset;
+  }
+
   refresh();
+
+  // Если пришли с ?offset=N — прыжок в hex-viewer + подсветка диапазона
+  if (qOffset !== null) {
+    const off = parseInt(qOffset, 10);
+    const len = qLength !== null ? parseInt(qLength, 10) : 0;
+    if (!isNaN(off)) {
+      setTimeout(() => {
+        if (!viewer) return;
+        viewer.jumpTo(off);
+        if (len > 0) {
+          viewer.flashRange(off, off + len);
+          window.taptuna.toast(
+            "сообщение: offset " + off + "–" + (off + len) +
+            " (первый байт тёмный, остальные светлые)"
+          );
+        } else {
+          window.taptuna.toast("переход к offset " + off);
+        }
+      }, 300);
+    }
+  }
 })();
 </script>
 {% endblock %}

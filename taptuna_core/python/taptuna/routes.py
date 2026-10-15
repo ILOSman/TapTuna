@@ -955,7 +955,24 @@ def api_get_run_results(run_id: int):
         status = request.args.get("status")
         offset = int(request.args.get("offset", 0))
         limit = int(request.args.get("limit", 100))
-        results = get_results(conn, run_id, status=status, offset=offset, limit=limit)
+
+        # JOIN с directions, чтобы вернуть направление (a_to_b/b_to_a)
+        sql = """
+            SELECT vr.*, d.direction AS direction_name
+            FROM verification_results vr
+            LEFT JOIN directions d ON d.id = vr.direction_id
+            WHERE vr.run_id = ?
+        """
+        params: list = [run_id]
+        if status:
+            sql += " AND vr.status = ?"
+            params.append(status)
+        sql += " ORDER BY vr.id LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+
+        cur = conn.cursor()
+        cur.execute(sql, params)
+        results = [dict(r) for r in cur.fetchall()]
         return _ok({"results": results})
     finally:
         conn.close()

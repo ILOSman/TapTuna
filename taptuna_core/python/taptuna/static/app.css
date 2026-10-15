@@ -313,3 +313,16 @@ table tr:hover td { background: #fbfbfd; }
   background: #b3d9ff;
   color: inherit;
 }
+
+/* Диапазон сообщения — светлый жёлтый */
+.hex-vscroll .byte.flash-range {
+  background: #fff3c7;
+  outline: 1px solid #f59f00;
+}
+
+/* Первый байт диапазона — насыщенный оранжевый, перекрывает .flash-range */
+.hex-vscroll .byte.flash-start {
+  background: #ffb84d;
+  outline: 2px solid #d97706;
+  font-weight: 600;
+}

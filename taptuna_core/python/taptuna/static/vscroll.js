@@ -30,8 +30,9 @@
       this.pending = new Set();
       this.firstRendered = -1;
       this.lastRendered = -1;
-      this.flashOffset = null;
-      this._flashRange = null;
+      this.flashOffset = null;    // один байт для подсветки (jumpTo)
+      this._flashRange = null;    // [start, end) для подсветки диапазона (flashRange)
+      this._flashStart = null;    // отдельный цвет для первого байта диапазона
       this._flashTimer = null;
       this._selectedOffsets = null;   // Set<string> текущего выделения
 
@@ -175,6 +176,7 @@
                 abs >= this._flashRange[0] && abs < this._flashRange[1]) {
               classes.push("flash-range");
             }
+            if (this._flashStart === abs) classes.push("flash-start");
             const cls = classes.join(" ");
             hexPart += '<span class="' + cls + '" data-off="' + abs + '">' + h + "</span> ";
             const ch = b >= 32 && b < 127 ? String.fromCharCode(b) : ".";
@@ -279,6 +281,7 @@
 
       this.flashOffset = absOffset;
       this._flashRange = null;
+      this._flashStart = null;
       this.render();
       clearTimeout(this._flashTimer);
       this._flashTimer = setTimeout(() => {
@@ -306,10 +309,12 @@
 
       this.flashOffset = null;
       this._flashRange = [start, end];
+      this._flashStart = start;
       this.render();
       clearTimeout(this._flashTimer);
       this._flashTimer = setTimeout(() => {
         this._flashRange = null;
+        this._flashStart = null;
         this.render();
       }, 2500);
 

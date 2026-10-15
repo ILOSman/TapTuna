@@ -196,16 +196,29 @@
       }
       let html = '<table><thead><tr>' +
         '<th>#</th><th>Status</th><th>Session</th><th>Offset</th>' +
-        '<th>Length</th><th>Message</th><th>Hash</th></tr></thead><tbody>';
+        '<th>Length</th><th>Message</th><th>Hash</th><th></th>' +
+        '</tr></thead><tbody>';
       for (const r of rows) {
+        const dirName = (r.direction_name === "b_to_a") ? "b_to_a" : "a_to_b";
+        const sessLink = '<a href="/sessions/' + r.session_id +
+          '?offset=' + r.stream_offset +
+          '&length=' + r.length +
+          '&direction=' + dirName +
+          '">#' + r.session_id + '</a>';
+        const bytesLink = '<a href="/sessions/' + r.session_id +
+          '?offset=' + r.stream_offset +
+          '&length=' + r.length +
+          '&direction=' + dirName +
+          '" class="mono small">→ байты</a>';
         html += '<tr>' +
           '<td>' + r.message_index + '</td>' +
           '<td><span class="status ' + r.status + '">' + r.status + '</span></td>' +
-          '<td>' + r.session_id + '</td>' +
-          '<td>' + r.stream_offset + '</td>' +
+          '<td>' + sessLink + '</td>' +
+          '<td class="mono">' + r.stream_offset + '</td>' +
           '<td>' + r.length + '</td>' +
           '<td>' + (r.message_name || "—") + '</td>' +
           '<td class="mono small">' + (r.result_hash || "").slice(0, 12) + '…</td>' +
+          '<td>' + bytesLink + '</td>' +
           '</tr>';
       }
       html += '</tbody></table>';
