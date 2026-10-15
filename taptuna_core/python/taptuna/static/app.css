@@ -288,3 +288,28 @@ table tr:hover td { background: #fbfbfd; }
   background: #ffe066;
   outline: 1px solid #f59f00;
 }
+
+/* ASCII-символ: 1ch ширины, чтобы hover-фон не разъезжался */
+.hex-vscroll .ascii-byte {
+  display: inline-block;
+  width: 1ch;
+  padding: 0;
+  text-align: center;
+}
+/* hover на ASCII подсвечивает и hex, и ASCII (одинаковый data-off) */
+.hex-vscroll .ascii-byte:hover {
+  background: #cce8ff;
+  cursor: pointer;
+}
+
+/* Синхронное выделение hex ↔ ASCII */
+.hex-vscroll ::selection {
+  background: #b3d9ff;
+  color: inherit;
+}
+
+/* Зеркальные байты, попавшие в выделение, — тот же цвет */
+.hex-vscroll .byte.selected {
+  background: #b3d9ff;
+  color: inherit;
+}

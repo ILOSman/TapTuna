@@ -8,12 +8,12 @@
 
   class HexViewer {
     /**
-     * @param {HTMLElement} container — корневой div (позиционирование absolute)
+     * @param {HTMLElement} container — корневой div
      * @param {Object} opts
      * @param {string} opts.sessionId
-     * @param {string} opts.direction  — 'a_to_b' | 'b_to_a'
+     * @param {string} opts.direction
      * @param {string} opts.projectId
-     * @param {number} opts.size       — общее число байт в потоке
+     * @param {number} opts.size
      * @param {Array}  opts.marks      — [{start, end, kind: 'gap'|'amb'|'msg-N'}]
      * @param {Function} [opts.onByteClick]
      */
@@ -26,13 +26,14 @@
       this.marks = opts.marks || [];
       this.onByteClick = opts.onByteClick || null;
 
-      this.chunks = new Map();    // chunkIdx -> Uint8Array
-      this.pending = new Set();   // chunkIdx, которые сейчас грузятся
+      this.chunks = new Map();
+      this.pending = new Set();
       this.firstRendered = -1;
       this.lastRendered = -1;
-      this.flashOffset = null;    // один байт для подсветки (jumpTo)
-      this._flashRange = null;    // [start, end) для подсветки диапазона (flashRange)
+      this.flashOffset = null;
+      this._flashRange = null;
       this._flashTimer = null;
+      this._selectedOffsets = null;   // Set<string> текущего выделения
 
       this.root.classList.add("hex-vscroll");
       this.root.style.height = "600px";
@@ -55,6 +56,11 @@
       this.windowEl.style.willChange = "transform";
 
       this.root.addEventListener("scroll", () => this.onScroll());
+
+      // Синхронизация выделения hex ↔ ASCII.
+      this._onSelectionChange = () => this.updateSelectionFromDom();
+      document.addEventListener("selectionchange", this._onSelectionChange);
+
       this.onScroll();
     }
 
@@ -109,7 +115,6 @@
         const buf = new Uint8Array(await r.arrayBuffer());
         this.chunks.set(chunkIdx, buf);
       } catch (e) {
-        // Помечаем чанк как недоступный — рендер покажет ".."
         this.chunks.set(chunkIdx, null);
       } finally {
         this.pending.delete(chunkIdx);
@@ -120,8 +125,8 @@
       if (absOffset < 0 || absOffset >= this.size) return null;
       const chunkIdx = Math.floor(absOffset / CHUNK_BYTES);
       const chunk = this.chunks.get(chunkIdx);
-      if (!chunk) return undefined;   // ещё не загружен
-      if (chunk === null) return null; // недоступен
+      if (!chunk) return undefined;
+      if (chunk === null) return null;
       const local = absOffset - chunkIdx * CHUNK_BYTES;
       return local < chunk.length ? chunk[local] : null;
     }
@@ -153,11 +158,13 @@
           }
           const b = this.byteAt(abs);
           if (b === undefined) {
-            hexPart += '<span class="byte pending">??</span> ';
-            asciiPart += "?";
+            hexPart += '<span class="byte pending" data-off="' + abs + '">??</span> ';
+            asciiPart += '<span class="byte pending ascii-byte" data-off="' +
+                         abs + '">?</span>';
           } else if (b === null) {
-            hexPart += '<span class="byte gap">..</span> ';
-            asciiPart += "·";
+            hexPart += '<span class="byte gap" data-off="' + abs + '">..</span> ';
+            asciiPart += '<span class="byte gap ascii-byte" data-off="' +
+                         abs + '">·</span>';
           } else {
             const h = b.toString(16).padStart(2, "0");
             const kind = this.markAt(abs);
@@ -171,7 +178,8 @@
             const cls = classes.join(" ");
             hexPart += '<span class="' + cls + '" data-off="' + abs + '">' + h + "</span> ";
             const ch = b >= 32 && b < 127 ? String.fromCharCode(b) : ".";
-            asciiPart += window.taptuna.escapeHtml(ch);
+            asciiPart += '<span class="' + cls + ' ascii-byte" data-off="' +
+                         abs + '">' + window.taptuna.escapeHtml(ch) + "</span>";
           }
         }
         linesHtml.push(
@@ -183,16 +191,76 @@
         );
       }
       this.windowEl.innerHTML = linesHtml.join("");
-      // Сдвигаем окно к первой видимой строке
       this.windowEl.style.transform = "translateY(" + (first * LINE_HEIGHT) + "px)";
+
+      // Восстановить выделение после перерисовки (при скролле).
+      if (this._selectedOffsets && this._selectedOffsets.size) {
+        const set = this._selectedOffsets;
+        this.windowEl.querySelectorAll(".byte[data-off]").forEach((el) => {
+          if (set.has(el.dataset.off)) el.classList.add("selected");
+        });
+      }
 
       if (this.onByteClick) {
         this.windowEl.querySelectorAll(".byte[data-off]").forEach((el) => {
           el.addEventListener("click", () => {
+            // Не открывать popup, если есть активное выделение —
+            // пользователь тянул мышь, а не кликал.
+            const sel = window.getSelection();
+            if (sel && !sel.isCollapsed) return;
             this.onByteClick(parseInt(el.dataset.off, 10), el);
           });
         });
       }
+    }
+
+    // ============================================================
+    // Синхронизация выделения: hex ↔ ASCII
+    // ============================================================
+    updateSelectionFromDom() {
+      const sel = window.getSelection();
+      if (!sel || sel.isCollapsed || sel.rangeCount === 0) {
+        this.clearSelectionHighlight();
+        return;
+      }
+      const range = sel.getRangeAt(0);
+      // Проверяем, попадает ли выделение в наш root.
+      const inRoot =
+        this.root.contains(range.commonAncestorContainer) ||
+        this.root.contains(range.startContainer) ||
+        this.root.contains(range.endContainer);
+      if (!inRoot) {
+        this.clearSelectionHighlight();
+        return;
+      }
+
+      const offsets = new Set();
+      this.windowEl.querySelectorAll(".byte[data-off]").forEach((el) => {
+        if (range.intersectsNode(el)) {
+          offsets.add(el.dataset.off);
+        }
+      });
+      this.applySelectionHighlight(offsets);
+    }
+
+    applySelectionHighlight(offsets) {
+      this._selectedOffsets = offsets;
+      const bytes = this.windowEl.querySelectorAll(".byte[data-off]");
+      bytes.forEach((el) => {
+        if (offsets.has(el.dataset.off)) {
+          el.classList.add("selected");
+        } else {
+          el.classList.remove("selected");
+        }
+      });
+    }
+
+    clearSelectionHighlight() {
+      if (this._selectedOffsets === null) return;
+      this._selectedOffsets = null;
+      this.windowEl.querySelectorAll(".byte.selected").forEach((el) => {
+        el.classList.remove("selected");
+      });
     }
 
     /** Прокрутка к offset с визуальной подсветкой одного байта. */
@@ -200,18 +268,15 @@
       if (absOffset < 0) absOffset = 0;
       if (absOffset >= this.size && this.size > 0) absOffset = this.size - 1;
 
-      // Прокручиваем так, чтобы целевая строка была в середине окна
       const line = Math.floor(absOffset / BYTES_PER_LINE);
       const viewportLines = Math.floor((this.root.clientHeight || 600) / LINE_HEIGHT);
       const targetScroll = Math.max(0, (line - Math.floor(viewportLines / 2)) * LINE_HEIGHT);
       this.root.scrollTop = targetScroll;
 
-      // Событие scroll может прийти асинхронно; синхронизируем состояние вручную.
       this.firstRendered = -1;
       this.lastRendered = -1;
       this.onScroll();
 
-      // Визуальная подсветка целевого байта — снимаем старую, ставим новую.
       this.flashOffset = absOffset;
       this._flashRange = null;
       this.render();
@@ -221,7 +286,6 @@
         this.render();
       }, 2000);
 
-      // Подгружаем чанк, если его ещё нет.
       this.ensureChunks(line, line + viewportLines);
     }
 
@@ -258,6 +322,11 @@
       this.marks = marks || [];
       this.firstRendered = -1;
       this.onScroll();
+    }
+
+    /** Освобождение ресурсов. */
+    destroy() {
+      document.removeEventListener("selectionchange", this._onSelectionChange);
     }
   }
 
