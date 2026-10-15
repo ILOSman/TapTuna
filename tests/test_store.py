@@ -93,17 +93,17 @@ def test_migrate_idempotent(tmp_path: Path):
     project_dir.mkdir()
     db_path = project_dir / "project.sqlite"
 
-    # Первый запуск
+    # Первый запуск — приводит к SCHEMA_VERSION
     v1 = migrate(db_path)
-    assert v1 == 1
+    assert v1 == SCHEMA_VERSION
 
-    # Второй запуск
+    # Второй запуск — не меняет версию
     v2 = migrate(db_path)
-    assert v2 == 1
+    assert v2 == SCHEMA_VERSION
 
-    # Третий запуск
+    # Третий запуск — тоже не меняет
     v3 = migrate(db_path)
-    assert v3 == 1
+    assert v3 == SCHEMA_VERSION
 
 
 def test_meta_table_initialized(tmp_path: Path):

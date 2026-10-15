@@ -43,7 +43,7 @@ tshark -r <file> -T fields \
 
 **Примечание:** в разделе перечислены все captures проекта. Корпус `{{ corpus.name }}` применяется к сессиям, удовлетворяющим критериям `{{ corpus.criteria_json }}`.
 
-## 4. Проверенные примеры
+## 4. Проверенные примеры (по правилам интерпретации)
 
 {% if verified_examples %}
 {% for ex in verified_examples[:10] %}
@@ -53,7 +53,7 @@ tshark -r <file> -T fields \
 _Нет проверенных примеров._
 {% endif %}
 
-## 5. Контрпримеры
+## 5. Контрпримеры (нарушения правил интерпретации)
 
 {% if counterexamples %}
 {% for ex in counterexamples[:10] %}
@@ -63,7 +63,7 @@ _Нет проверенных примеров._
 _Контрпримеры не обнаружены._
 {% endif %}
 
-## 6. Неизвестные участки
+## 6. Неизвестные участки (интерпретация не применима)
 
 {% if unknown_areas %}
 {% for ex in unknown_areas[:10] %}
@@ -85,11 +85,26 @@ _Неизвестные участки отсутствуют._
 
 ## 9. Гипотезы и наблюдения (отдельно от правил)
 
-**Гипотезы** — предположения о смысле данных:
+**Важно:** гипотезы — это **предположения о смысле данных**, а не правила разбора.
+Результаты гипотез («удовлетворено» / «противоречит») не влияют на статусы
+сообщений в §4–6. Успешный разбор структуры сам по себе не подтверждает
+смысловую интерпретацию.
+
+**Гипотезы:**
 
 {% if hypotheses %}
 {% for h in hypotheses %}
-- [{{ h.status }}] {{ h.formulation }}
+- [{{ h.auto_status | default(h.status) | default('unknown') }}] {{ h.formulation }}
+{% if h.expression_text %}
+  - выражение: `{{ h.expression_text }}`
+{% endif %}
+{% if h.notes %}
+  - заметки: {{ h.notes }}
+{% endif %}
+{% if h.checked_count %}
+  - проверок: {{ h.checked_count }}, удовлетворено: {{ h.satisfied_count | default(0) }}, противоречит: {{ h.violated_count | default(0) }}, не применимо: {{ h.not_applicable_count | default(0) }}{% if h.error_count %}, ошибок: {{ h.error_count }}{% endif %}
+{% endif %}
+
 {% endfor %}
 {% else %}
 _Гипотезы не зафиксированы._
@@ -100,6 +115,7 @@ _Гипотезы не зафиксированы._
 {% if observations %}
 {% for o in observations %}
 - [{{ o.target_type }} #{{ o.target_id }}]{% if o.byte_range_start is not none %} (offset {{ o.byte_range_start }}{% if o.byte_range_end is not none and o.byte_range_end != o.byte_range_start %}–{{ o.byte_range_end }}{% endif %}){% endif %} {{ o.description }}
+
 {% endfor %}
 {% else %}
 _Наблюдения не зафиксированы._

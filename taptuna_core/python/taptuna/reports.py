@@ -308,7 +308,7 @@ def _render_markdown_fallback(data: dict[str, Any], model: dict[str, Any]) -> st
              f"удовлетворяющим критериям `{corpus['criteria_json']}`.\n")
 
     # 4. Проверенные примеры
-    L.append("## 4. Проверенные примеры\n")
+    L.append("## 4. Проверенные примеры (по правилам интерпретации)\n")
     if data["verified_examples"]:
         for ex in data["verified_examples"][:10]:
             L.append(f"- Сообщение #{ex['message_index']} @ offset "
@@ -354,13 +354,30 @@ def _render_markdown_fallback(data: dict[str, Any], model: dict[str, Any]) -> st
     L.append(f"- Проверенные примеры: {len(data['verified_examples'])} "
              f"успешно разобраны\n")
 
-    # 9. Гипотезы (отдельно от правил)
+    # 9. Гипотезы и наблюдения (отдельно от правил)
     # 9. Гипотезы и наблюдения (отдельно от правил)
     L.append("## 9. Гипотезы и наблюдения (отдельно от правил)\n")
-    L.append("**Гипотезы** — предположения о смысле данных:\n")
+    L.append("**Важно:** гипотезы — это **предположения о смысле данных**, "
+             "а не правила разбора. Результаты гипотез "
+             "(«удовлетворено»/«противоречит») не влияют на статусы "
+             "сообщений в §4–6.\n")
+
+    L.append("**Гипотезы:**\n")
     if data["hypotheses"]:
         for h in data["hypotheses"]:
-            L.append(f"- [{h['status']}] {h['formulation']}")
+            status = h.get("auto_status") or h.get("status") or "unknown"
+            L.append(f"- [{status}] {h['formulation']}")
+            if h.get("expression_text"):
+                L.append(f"    - выражение: `{h['expression_text']}`")
+            if h.get("notes"):
+                L.append(f"    - заметки: {h['notes']}")
+            if h.get("checked_count"):
+                L.append(
+                    f"    - проверок: {h['checked_count']}, "
+                    f"удовлетворено: {h.get('satisfied_count', 0)}, "
+                    f"противоречит: {h.get('violated_count', 0)}, "
+                    f"не применимо: {h.get('not_applicable_count', 0)}"
+                )
         L.append("")
     else:
         L.append("_Гипотезы не зафиксированы._\n")

@@ -4,19 +4,160 @@
 
 <h1>Интерпретации</h1>
 
-<section class="card">
-  <h2>Добавить</h2>
-  <div class="row" style="margin-bottom:0.5rem">
-    <input type="text" id="new-name" placeholder="name (напр. http_v1)" style="width:220px">
-    <select id="new-kind">
-      <option value="declarative">declarative</option>
-      <option value="script">script</option>
-    </select>
-    <span class="spacer"></span>
-    <button id="add-btn" class="primary">Добавить</button>
+<details class="card" style="margin-bottom:1rem">
+  <summary style="cursor:pointer; font-weight:600">
+    Как это работает? Разбор типов и стратегий
+  </summary>
+  <div class="small" style="line-height:1.7; margin-top:0.6rem">
+    <p>
+      <strong>Интерпретация</strong> — декларативная модель, описывающая
+      как разбить байтовый поток на сообщения (<em>framing</em>) и как
+      извлечь из каждого сообщения поля (<em>fields</em>).
+    </p>
+
+    <h4 style="margin-top:1rem">1. Framing</h4>
+    <ul style="margin-left:1.2rem">
+      <li><code>fixed</code> — сообщения фиксированной длины (<code>size</code>).</li>
+      <li><code>length_prefix</code> — N байт длины в начале
+        (<code>prefix_bytes</code>, <code>big_endian</code>,
+        <code>length_includes_prefix</code>).</li>
+      <li><code>delimiter</code> — разделитель
+        (<code>delim</code> hex, <code>include_delim</code>).</li>
+      <li><code>regex</code> — регулярка (<code>pattern</code>, <code>include_match</code>).</li>
+    </ul>
+
+    <h4 style="margin-top:1rem">2. Типы полей</h4>
+    <p>
+      <code>u8 / i8</code> (1Б) · <code>u16be/le</code>, <code>u24be/le</code>,
+      <code>u32be/le</code>, <code>u64be/le</code> · <code>bytes</code> ·
+      <code>utf8</code>/<code>ascii</code> · <code>bcd</code>.
+    </p>
+
+    <h4 style="margin-top:1rem">3. Offset и Size</h4>
+    <p>
+      <strong>offset</strong>: <code>auto</code> (после предыдущего),
+      <code>N</code> (абсолютный), <code>from_end:N</code> (от конца).<br>
+      <strong>size</strong>: <code>N</code>, <code>remaining</code>,
+      <code>from_field:имя</code>.
+    </p>
+
+    <h4 style="margin-top:1rem">4. Constraints</h4>
+    <p>
+      Выражения над полями: <code>temp &gt;= -20 and temp &lt;= 20</code>.
+      Не выполнено → при верификации сообщение получит статус <code>violation</code>.
+    </p>
+
+    <h4 style="margin-top:1rem">5. Preview</h4>
+    <p>
+      Кнопка <strong>Preview</strong> позволяет сразу применить интерпретацию
+      к выбранной сессии — посмотреть, что извлекается, до сохранения
+      и запуска верификации.
+    </p>
   </div>
-  <textarea id="new-yaml" class="mono" rows="14" style="width:100%"
-    placeholder="framing:
+</details>
+
+<section class="card">
+  <div class="row" style="border-bottom:1px solid var(--line); padding-bottom:0.5rem; margin-bottom:0.8rem">
+    <h2 style="margin:0" id="form-title">Создать интерпретацию</h2>
+    <span class="spacer"></span>
+    <button id="tab-form" class="primary">Форма</button>
+    <button id="tab-yaml">YAML</button>
+  </div>
+
+  <div id="pane-form">
+    <div class="row" style="gap:0.5rem">
+      <label style="min-width:100px">Имя:</label>
+      <input type="text" id="f-name" placeholder="например: sensor_v1"
+             style="flex:1; max-width:340px">
+      <span class="muted small" id="f-name-hint">(при редактировании имя не меняется,
+        сохранение создаст новую версию)</span>
+    </div>
+
+    <h3 style="margin-top:1rem">Framing</h3>
+    <div class="row" style="gap:0.6rem; flex-wrap:wrap">
+      <label>Стратегия:</label>
+      <select id="f-framing-kind">
+        <option value="fixed">fixed</option>
+        <option value="length_prefix">length_prefix</option>
+        <option value="delimiter">delimiter</option>
+        <option value="regex">regex</option>
+      </select>
+
+      <span class="f-framing-params" data-kind="fixed">
+        <label>size: <input type="number" id="f-fixed-size" value="16" style="width:80px"></label>
+      </span>
+
+      <span class="f-framing-params" data-kind="length_prefix" hidden>
+        <label>prefix_bytes: <input type="number" id="f-lp-prefix" value="2" style="width:60px"></label>
+        <label>big_endian: <input type="checkbox" id="f-lp-be" checked></label>
+        <label>includes_prefix: <input type="checkbox" id="f-lp-inc"></label>
+      </span>
+
+      <span class="f-framing-params" data-kind="delimiter" hidden>
+        <label>delim (hex): <input type="text" id="f-delim" value="0d0a" style="width:120px"></label>
+        <label>include: <input type="checkbox" id="f-delim-inc" checked></label>
+      </span>
+
+      <span class="f-framing-params" data-kind="regex" hidden>
+        <label>pattern: <input type="text" id="f-regex-pat" value="[^\n]*\n" style="width:220px"></label>
+        <label>include: <input type="checkbox" id="f-regex-inc" checked></label>
+      </span>
+
+      <label>max_message: <input type="number" id="f-max" value="65536" style="width:100px"></label>
+    </div>
+
+    <h3 style="margin-top:1rem">Fields <button id="f-add-field" type="button" style="font-size:0.85rem">+ поле</button></h3>
+    <div id="f-fields-list"></div>
+
+    <h3 style="margin-top:1rem">Constraints <button id="f-add-constraint" type="button" style="font-size:0.85rem">+ условие</button></h3>
+    <p class="muted small" style="margin:0 0 0.4rem 0">
+      Выражения над полями. Одна строка — одно условие, между ними AND.
+      Пример: <code>temp &gt;= -20 and temp &lt;= 20</code>
+    </p>
+    <div id="f-constraints-list"></div>
+
+    <h3 style="margin-top:1rem">Semantics (необязательно)</h3>
+    <textarea id="f-semantics" class="mono" rows="2" style="width:100%"
+      placeholder='{"fields": {"temp": {"meaning": "температура в °C"}}}'></textarea>
+
+    <h3 style="margin-top:1rem">Preview</h3>
+    <div class="row" style="gap:0.5rem">
+      <label>Сессия:</label>
+      <select id="f-preview-session" style="min-width:320px">
+        <option value="">— выберите —</option>
+        {% for s in sessions %}
+        <option value="{{ s.id }}">
+          #{{ s.id }}  {{ s.ip_src }}:{{ s.port_src }} ↔ {{ s.ip_dst }}:{{ s.port_dst }}
+        </option>
+        {% endfor %}
+      </select>
+      <label>Direction:</label>
+      <select id="f-preview-direction">
+        <option value="a_to_b">a_to_b</option>
+        <option value="b_to_a">b_to_a</option>
+      </select>
+      <button id="f-preview" type="button">Preview</button>
+    </div>
+
+    <div class="row" style="margin-top:1rem">
+      <button id="f-create" class="primary">Сохранить как новую версию</button>
+      <button id="f-reset" type="button" hidden>Отменить редактирование</button>
+      <span id="f-status" class="muted small"></span>
+    </div>
+  </div>
+
+  <div id="pane-yaml" hidden>
+    <div class="row">
+      <input type="text" id="y-name" placeholder="name (напр. http_v1)" style="width:220px">
+      <select id="y-kind">
+        <option value="declarative">declarative</option>
+        <option value="script">script</option>
+      </select>
+      <span class="spacer"></span>
+      <button id="y-create" class="primary">Добавить</button>
+    </div>
+    <textarea id="y-source" class="mono" rows="16" style="width:100%; margin-top:0.6rem"
+      placeholder="framing:
   kind: fixed
   size: 13
   max_message: 1024
@@ -30,7 +171,7 @@ fields:
 constraints: []
 semantics: {}
 "></textarea>
-  <p class="muted small">YAML — для declarative-интерпретаций. Для script — поле code с функцией interpret.</p>
+  </div>
 </section>
 
 <section class="card">
@@ -50,7 +191,8 @@ semantics: {}
         <td>{{ i.kind }}</td>
         <td class="mono small">{{ i.source_hash[:12] }}…</td>
         <td class="small">{{ i.created_at }}</td>
-        <td>
+        <td style="white-space:nowrap">
+          <button class="edit-btn" data-id="{{ i.id }}">Редактировать</button>
           <button class="apply-btn" data-id="{{ i.id }}"
                   data-name="{{ i.name }}@v{{ i.version }}">Применить</button>
         </td>
@@ -85,51 +227,547 @@ semantics: {}
   <pre id="apply-result" class="mono" style="max-height:500px; overflow:auto; background:#fbfbfd; padding:0.5rem">—</pre>
 </section>
 
+<!-- Модальное окно preview -->
+<div id="preview-modal" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0;
+     background:rgba(0,0,0,0.4); z-index:400; align-items:center; justify-content:center;">
+  <div style="background:#fff; border-radius:8px; max-width:1100px; width:90%; max-height:85vh;
+              display:flex; flex-direction:column; padding:1rem;">
+    <div class="row">
+      <h3 style="margin:0" id="preview-title">Preview</h3>
+      <span class="spacer"></span>
+      <button id="preview-close" type="button">×</button>
+    </div>
+    <div id="preview-summary" class="small muted" style="margin:0.5rem 0"></div>
+    <div id="preview-body" style="overflow:auto; flex:1">—</div>
+  </div>
+</div>
+
 {% endblock %}
 
 {% block scripts %}
 <script>
 (function () {
-  const addBtn = document.getElementById("add-btn");
-  const newName = document.getElementById("new-name");
-  const newKind = document.getElementById("new-kind");
-  const newYaml = document.getElementById("new-yaml");
-  const applyCard = document.getElementById("apply-card");
-  const applyName = document.getElementById("apply-name");
-  const applySession = document.getElementById("apply-session");
-  const applyDirection = document.getElementById("apply-direction");
-  const applyGo = document.getElementById("apply-go");
-  const applyResult = document.getElementById("apply-result");
+  "use strict";
 
-  let currentApplyId = null;
+  // ============================================================
+  // Табы
+  // ============================================================
+  const tabForm = document.getElementById("tab-form");
+  const tabYaml = document.getElementById("tab-yaml");
+  const paneForm = document.getElementById("pane-form");
+  const paneYaml = document.getElementById("pane-yaml");
+  const formTitle = document.getElementById("form-title");
 
-  addBtn.addEventListener("click", async () => {
-    const name = newName.value.trim();
-    if (!name) { window.taptuna.toast("Укажите имя", "err"); return; }
-    const src = newYaml.value;
-    let spec;
+  function activateTab(which) {
+    if (which === "form") {
+      paneForm.hidden = false;
+      paneYaml.hidden = true;
+      tabForm.classList.add("primary");
+      tabYaml.classList.remove("primary");
+    } else {
+      paneForm.hidden = true;
+      paneYaml.hidden = false;
+      tabYaml.classList.add("primary");
+      tabForm.classList.remove("primary");
+    }
+  }
+  tabForm.addEventListener("click", () => activateTab("form"));
+  tabYaml.addEventListener("click", () => activateTab("yaml"));
+  activateTab("form");
+
+  // ============================================================
+  // Framing
+  // ============================================================
+  const framingKind = document.getElementById("f-framing-kind");
+  framingKind.addEventListener("change", () => {
+    document.querySelectorAll(".f-framing-params[data-kind]").forEach((el) => {
+      el.hidden = el.dataset.kind !== framingKind.value;
+    });
+  });
+
+  // ============================================================
+  // Fields
+  // ============================================================
+  const fieldsList = document.getElementById("f-fields-list");
+  const FIELD_TYPES = [
+    "u8", "i8",
+    "u16be", "u16le", "u24be", "u24le",
+    "u32be", "u32le", "u64be", "u64le",
+    "bytes", "utf8", "ascii", "bcd",
+  ];
+
+  function addFieldRow(preset) {
+    preset = preset || {};
+    const row = document.createElement("div");
+    row.className = "f-field-row";
+    row.style.cssText = "display:flex; gap:0.4rem; align-items:center; margin-bottom:0.3rem; flex-wrap:wrap";
+
+    const nameInput = document.createElement("input");
+    nameInput.type = "text";
+    nameInput.placeholder = "имя поля";
+    nameInput.value = preset.name || "";
+    nameInput.style.cssText = "width:140px";
+
+    const typeSel = document.createElement("select");
+    for (const t of FIELD_TYPES) {
+      const o = document.createElement("option");
+      o.value = t; o.textContent = t;
+      typeSel.appendChild(o);
+    }
+    typeSel.value = preset.type || "u8";
+
+    const offInput = document.createElement("input");
+    offInput.type = "text";
+    offInput.placeholder = "offset (auto / 0 / from_end:N)";
+    offInput.value = preset.offset != null ? String(preset.offset) : "auto";
+    offInput.style.cssText = "width:220px";
+
+    const sizeInput = document.createElement("input");
+    sizeInput.type = "text";
+    sizeInput.placeholder = "size (N / remaining / from_field:name)";
+    sizeInput.value = preset.size != null ? String(preset.size) : "remaining";
+    sizeInput.style.cssText = "width:220px";
+
+    const digitsInput = document.createElement("input");
+    digitsInput.type = "number";
+    digitsInput.placeholder = "digits";
+    digitsInput.value = preset.digits != null ? String(preset.digits) : "2";
+    digitsInput.style.cssText = "width:70px; display:none";
+
+    const rmBtn = document.createElement("button");
+    rmBtn.type = "button";
+    rmBtn.textContent = "×";
+    rmBtn.style.cssText = "padding:0.2rem 0.5rem; color:#c53030";
+    rmBtn.addEventListener("click", () => row.remove());
+
+    function updateDigitsVisibility() {
+      digitsInput.style.display = typeSel.value === "bcd" ? "" : "none";
+    }
+    typeSel.addEventListener("change", updateDigitsVisibility);
+    updateDigitsVisibility();
+
+    row.appendChild(nameInput);
+    row.appendChild(typeSel);
+    row.appendChild(offInput);
+    row.appendChild(sizeInput);
+    row.appendChild(digitsInput);
+    row.appendChild(rmBtn);
+    fieldsList.appendChild(row);
+  }
+
+  document.getElementById("f-add-field").addEventListener("click", () => addFieldRow());
+
+  // ============================================================
+  // Constraints
+  // ============================================================
+  const constraintsList = document.getElementById("f-constraints-list");
+
+  function addConstraintRow(text) {
+    const row = document.createElement("div");
+    row.style.cssText = "display:flex; gap:0.4rem; align-items:center; margin-bottom:0.3rem";
+
+    const inp = document.createElement("input");
+    inp.type = "text";
+    inp.placeholder = "temp >= -20 and temp <= 20";
+    inp.value = text || "";
+    inp.style.cssText = "flex:1; max-width:640px";
+
+    const rmBtn = document.createElement("button");
+    rmBtn.type = "button";
+    rmBtn.textContent = "×";
+    rmBtn.style.cssText = "padding:0.2rem 0.5rem; color:#c53030";
+    rmBtn.addEventListener("click", () => row.remove());
+
+    row.appendChild(inp);
+    row.appendChild(rmBtn);
+    constraintsList.appendChild(row);
+  }
+
+  document.getElementById("f-add-constraint").addEventListener("click", () => addConstraintRow());
+
+  // ============================================================
+  // Сборка spec
+  // ============================================================
+  function parseSize(v) {
+    v = (v || "").trim();
+    if (v === "remaining") return {kind: "remaining"};
+    if (/^\d+$/.test(v)) return {kind: "fixed", n: parseInt(v, 10)};
+    if (v.startsWith("from_field:")) return {kind: "from_field", name: v.slice("from_field:".length)};
+    return {kind: "remaining"};
+  }
+  function parseOffset(v) {
+    v = (v || "").trim();
+    if (v === "auto") return {kind: "auto"};
+    if (v.startsWith("from_end:")) return {kind: "from_end", n: parseInt(v.slice(9), 10)};
+    if (/^\d+$/.test(v)) return {kind: "fixed", n: parseInt(v, 10)};
+    return {kind: "auto"};
+  }
+
+  function buildFraming() {
+    const kind = framingKind.value;
+    const max_message = parseInt(document.getElementById("f-max").value || "65536", 10);
+    if (kind === "fixed") {
+      return {kind, size: parseInt(document.getElementById("f-fixed-size").value || "16", 10), max_message};
+    }
+    if (kind === "length_prefix") {
+      return {
+        kind,
+        prefix_bytes: parseInt(document.getElementById("f-lp-prefix").value || "2", 10),
+        big_endian: document.getElementById("f-lp-be").checked,
+        length_includes_prefix: document.getElementById("f-lp-inc").checked,
+        max_message,
+      };
+    }
+    if (kind === "delimiter") {
+      const hex = (document.getElementById("f-delim").value || "").replace(/\s/g, "");
+      const bytes = [];
+      for (let i = 0; i < hex.length; i += 2) bytes.push(parseInt(hex.slice(i, i + 2), 16));
+      return {
+        kind, delim: bytes,
+        include_delim: document.getElementById("f-delim-inc").checked,
+        max_message,
+      };
+    }
+    if (kind === "regex") {
+      return {
+        kind,
+        pattern: document.getElementById("f-regex-pat").value || "",
+        include_match: document.getElementById("f-regex-inc").checked,
+        max_message,
+      };
+    }
+    return {kind, max_message};
+  }
+
+  function buildFields() {
+    const rows = fieldsList.querySelectorAll(".f-field-row");
+    const out = [];
+    rows.forEach((row) => {
+      const [nameInp, typeSel, offInp, sizeInp, digitsInp] = row.children;
+      const name = nameInp.value.trim();
+      if (!name) return;
+      const type = typeSel.value;
+      const offset = parseOffset(offInp.value);
+      const size = parseSize(sizeInp.value);
+      const field = {name, type};
+      if (offset.kind === "auto") field.offset = "auto";
+      else if (offset.kind === "fixed") field.offset = offset.n;
+      else if (offset.kind === "from_end") field.offset = {kind: "from_end", n: offset.n};
+      if (size.kind === "remaining") field.size = "remaining";
+      else if (size.kind === "fixed") field.size = size.n;
+      else if (size.kind === "from_field") field.size = {from_field: size.name};
+      if (type === "bcd") field.digits = parseInt(digitsInp.value || "2", 10);
+      out.push(field);
+    });
+    return out;
+  }
+
+  function buildConstraints() {
+    const rows = constraintsList.querySelectorAll("input");
+    const out = [];
+    rows.forEach((inp) => {
+      const v = inp.value.trim();
+      if (v) out.push(v);
+    });
+    return out;
+  }
+
+  function buildSpecBody() {
+    let semantics = {};
+    const semText = document.getElementById("f-semantics").value.trim();
+    if (semText) semantics = JSON.parse(semText);
+    return {
+      framing: buildFraming(),
+      fields: {name: "message", fields: buildFields()},
+      constraints_text: buildConstraints(),
+      semantics,
+    };
+  }
+
+  // ============================================================
+  // Preview
+  // ============================================================
+  const previewModal = document.getElementById("preview-modal");
+  const previewTitle = document.getElementById("preview-title");
+  const previewSummary = document.getElementById("preview-summary");
+  const previewBody = document.getElementById("preview-body");
+  const previewClose = document.getElementById("preview-close");
+
+  function openPreviewModal() {
+    previewModal.style.display = "flex";
+  }
+  function closePreviewModal() {
+    previewModal.style.display = "none";
+  }
+  previewClose.addEventListener("click", closePreviewModal);
+  previewModal.addEventListener("click", (e) => {
+    if (e.target === previewModal) closePreviewModal();
+  });
+
+  function renderPreviewMessages(d) {
+    const msgs = d.messages || [];
+    if (!msgs.length) {
+      previewBody.innerHTML = '<p class="muted">Ни одного сообщения не найдено. Проверьте framing.</p>';
+      previewSummary.textContent = "Поток: " + d.total_bytes + " байт";
+      return;
+    }
+    previewSummary.innerHTML =
+      'Сообщений: ' + msgs.length + ' · Поток: ' + d.total_bytes + ' байт';
+
+    let html = '<table><thead><tr>' +
+      '<th>#</th><th>status</th><th>offset</th><th>length</th>' +
+      '<th>fields</th><th>notes</th></tr></thead><tbody>';
+    for (const m of msgs.slice(0, 200)) {
+      const fields = m.fields ? JSON.stringify(m.fields) : "—";
+      const notes = (m.notes && m.notes.length) ? m.notes.join("; ") : "—";
+      const st = ["ok","violation","ambiguous","incomplete","not_applicable","unknown_frame"].includes(m.status)
+        ? "status " + m.status : "status";
+      html += '<tr>' +
+        '<td>' + m.index + '</td>' +
+        '<td><span class="' + st + '">' + m.status + '</span></td>' +
+        '<td class="mono">' + m.stream_offset + '</td>' +
+        '<td>' + m.length + '</td>' +
+        '<td class="mono small">' + window.taptuna.escapeHtml(fields).slice(0, 200) + '</td>' +
+        '<td class="small muted">' + window.taptuna.escapeHtml(notes).slice(0, 100) + '</td>' +
+        '</tr>';
+    }
+    html += '</tbody></table>';
+    if (msgs.length > 200) {
+      html += '<p class="muted small">Показаны первые 200 из ' + msgs.length + '.</p>';
+    }
+    previewBody.innerHTML = html;
+  }
+
+  document.getElementById("f-preview").addEventListener("click", async () => {
+    const sessionId = document.getElementById("f-preview-session").value;
+    if (!sessionId) {
+      window.taptuna.toast("Выберите сессию для preview", "err");
+      return;
+    }
+    const direction = document.getElementById("f-preview-direction").value;
+    let body;
     try {
-      // Простой парсер YAML через endpoint — но у нас нет; попробуем как JSON
-      // Проще передать на сервер как source_yaml; сервер распарсит.
-      spec = { source_yaml: src };
-    } catch (e) { window.taptuna.toast("YAML: " + e.message, "err"); return; }
+      body = buildSpecBody();
+    } catch (e) {
+      window.taptuna.toast("Ошибка в семантике: " + e.message, "err");
+      return;
+    }
+    if (!body.fields.fields.length) {
+      window.taptuna.toast("Добавьте хотя бы одно поле", "err");
+      return;
+    }
+    body.session_id = parseInt(sessionId, 10);
+    body.direction = direction;
 
-    // Парсим на клиенте примитивно — если это JSON, отдадим как объект
-    // Здесь правильнее послать YAML и распарсить на сервере. Но наш
-    // POST /interpretations ждёт уже распарсенные блоки.
-    // Отправим минимально: name, kind, source_yaml, а блоки распарсит
-    // сервер (пока он этого не делает — упрощённый путь).
+    previewTitle.textContent = "Preview";
+    previewSummary.textContent = "применение...";
+    previewBody.textContent = "загрузка...";
+    openPreviewModal();
+
+    try {
+      const d = await window.taptuna.api("POST",
+        "/api/projects/{{ project_name }}/interpretations/preview", body);
+      renderPreviewMessages(d);
+    } catch (e) {
+      previewSummary.textContent = "";
+      previewBody.innerHTML = '<p style="color:#c53030">Ошибка: ' +
+        window.taptuna.escapeHtml(e.message) + '</p>';
+    }
+  });
+
+  // ============================================================
+  // Создание / сохранение
+  // ============================================================
+  const fCreate = document.getElementById("f-create");
+  const fReset = document.getElementById("f-reset");
+  const fName = document.getElementById("f-name");
+  const fStatus = document.getElementById("f-status");
+  const fNameHint = document.getElementById("f-name-hint");
+
+  let editingId = null;
+
+  fReset.addEventListener("click", () => {
+    resetFormForCreate();
+  });
+
+  function resetFormForCreate() {
+    editingId = null;
+    formTitle.textContent = "Создать интерпретацию";
+    fName.value = "";
+    fName.readOnly = false;
+    fNameHint.style.display = "";
+    fReset.hidden = true;
+    fCreate.textContent = "Создать интерпретацию";
+    fStatus.textContent = "";
+
+    framingKind.value = "fixed";
+    document.getElementById("f-fixed-size").value = "16";
+    document.getElementById("f-max").value = "65536";
+    framingKind.dispatchEvent(new Event("change"));
+
+    fieldsList.innerHTML = "";
+    addFieldRow({name: "magic", type: "u8", offset: 0, size: 1});
+
+    constraintsList.innerHTML = "";
+    document.getElementById("f-semantics").value = "";
+  }
+
+  fCreate.addEventListener("click", async () => {
+    const name = fName.value.trim();
+    if (!name) {
+      window.taptuna.toast("Введите имя интерпретации", "err");
+      return;
+    }
+    let body;
+    try {
+      body = buildSpecBody();
+    } catch (e) {
+      window.taptuna.toast("Semantics: невалидный JSON — " + e.message, "err");
+      return;
+    }
+    if (!body.fields.fields.length) {
+      window.taptuna.toast("Добавьте хотя бы одно поле", "err");
+      return;
+    }
+    body.name = name;
+    body.kind = "declarative";
+
+    fStatus.textContent = editingId ? "сохранение новой версии..." : "создание...";
+    try {
+      const d = await window.taptuna.api("POST",
+        "/api/projects/{{ project_name }}/interpretations", body);
+      fStatus.textContent = "";
+      window.taptuna.toast("Создано: " + d.name + "@v" + d.version, "ok");
+      setTimeout(() => window.location.reload(), 500);
+    } catch (e) {
+      fStatus.innerHTML = '<span style="color:#c53030">' +
+        window.taptuna.escapeHtml(e.message) + '</span>';
+    }
+  });
+
+  // ============================================================
+  // Редактор: загрузка существующей
+  // ============================================================
+  document.querySelectorAll(".edit-btn").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const id = btn.dataset.id;
+      try {
+        const d = await window.taptuna.api("GET",
+          "/api/interpretations/" + id + "?project_id={{ project_name }}");
+        const i = d.interpretation;
+
+        if (i.kind === "script") {
+          // Script редактируем только в YAML
+          activateTab("yaml");
+          document.getElementById("y-name").value = i.name;
+          document.getElementById("y-kind").value = i.kind;
+          document.getElementById("y-source").value = i.source_yaml || "";
+          window.scrollTo({ top: 0, behavior: "smooth" });
+          window.taptuna.toast("Script-интерпретации редактируются в YAML");
+          return;
+        }
+
+        activateTab("form");
+        editingId = i.id;
+        formTitle.textContent = "Редактировать " + i.name + "@v" + i.version +
+          " (сохранение создаст новую версию)";
+        fName.value = i.name;
+        fName.readOnly = true;
+        fNameHint.style.display = "none";
+        fReset.hidden = false;
+        fCreate.textContent = "Сохранить как новую версию";
+        fStatus.textContent = "";
+
+        fillFormFromSpec(i);
+
+        window.scrollTo({ top: 0, behavior: "smooth" });
+      } catch (e) {
+        window.taptuna.toast("Ошибка загрузки: " + e.message, "err");
+      }
+    });
+  });
+
+  function fillFormFromSpec(i) {
+    // Framing
+    const f = i.framing_parsed || {};
+    if (f.kind) {
+      framingKind.value = f.kind;
+      framingKind.dispatchEvent(new Event("change"));
+    }
+    if (f.kind === "fixed") {
+      document.getElementById("f-fixed-size").value = f.size || 16;
+    } else if (f.kind === "length_prefix") {
+      document.getElementById("f-lp-prefix").value = f.prefix_bytes || 2;
+      document.getElementById("f-lp-be").checked = !!f.big_endian;
+      document.getElementById("f-lp-inc").checked = !!f.length_includes_prefix;
+    } else if (f.kind === "delimiter") {
+      const delimBytes = f.delim || [];
+      document.getElementById("f-delim").value = delimBytes
+        .map((b) => (b & 0xFF).toString(16).padStart(2, "0")).join("");
+      document.getElementById("f-delim-inc").checked = f.include_delim !== false;
+    } else if (f.kind === "regex") {
+      document.getElementById("f-regex-pat").value = f.pattern || "";
+      document.getElementById("f-regex-inc").checked = f.include_match !== false;
+    }
+    if (f.max_message) document.getElementById("f-max").value = f.max_message;
+
+    // Fields
+    fieldsList.innerHTML = "";
+    const fieldsBlock = i.fields_parsed || {};
+    const fields = fieldsBlock.fields || [];
+    if (!fields.length) {
+      addFieldRow();
+    } else {
+      for (const fld of fields) {
+        const preset = {
+          name: fld.name,
+          type: fld.type,
+          digits: fld.digits,
+        };
+        // offset
+        if (fld.offset === "auto" || fld.offset == null) preset.offset = "auto";
+        else if (typeof fld.offset === "number") preset.offset = fld.offset;
+        else if (fld.offset && typeof fld.offset === "object" && fld.offset.kind === "from_end") {
+          preset.offset = "from_end:" + fld.offset.n;
+        } else preset.offset = "auto";
+        // size
+        if (fld.size === "remaining" || fld.size == null) preset.size = "remaining";
+        else if (typeof fld.size === "number") preset.size = fld.size;
+        else if (fld.size && typeof fld.size === "object" && fld.size.from_field) {
+          preset.size = "from_field:" + fld.size.from_field;
+        } else preset.size = "remaining";
+        addFieldRow(preset);
+      }
+    }
+
+    // Constraints
+    constraintsList.innerHTML = "";
+    const ctexts = i.constraints_text_list || [];
+    if (!ctexts.length && i.constraints_parsed && i.constraints_parsed.length) {
+      // Fallback: нет сохранённых строк — показываем JSON-строку в одном input
+      addConstraintRow(JSON.stringify(i.constraints_parsed));
+    } else {
+      for (const t of ctexts) addConstraintRow(t);
+    }
+
+    // Semantics
+    document.getElementById("f-semantics").value = i.semantics_parsed
+      ? JSON.stringify(i.semantics_parsed, null, 0) : "";
+  }
+
+  // ============================================================
+  // YAML
+  // ============================================================
+  document.getElementById("y-create").addEventListener("click", async () => {
+    const name = document.getElementById("y-name").value.trim();
+    const kind = document.getElementById("y-kind").value;
+    const src = document.getElementById("y-source").value;
+    if (!name) { window.taptuna.toast("Укажите имя", "err"); return; }
     try {
       const r = await fetch("/api/projects/{{ project_name }}/interpretations", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({
-          name: name,
-          kind: newKind.value,
-          source_yaml: src,
-          // framing/fields/constraints/semantics не отправляем —
-          // сервер распарсит их из YAML
-        }),
+        body: JSON.stringify({name, kind, source_yaml: src}),
       });
       const d = await r.json();
       if (!r.ok) throw new Error((d.error && d.error.message) || "HTTP " + r.status);
@@ -139,6 +777,17 @@ semantics: {}
       window.taptuna.toast(e.message, "err");
     }
   });
+
+  // ============================================================
+  // Apply (существующая кнопка)
+  // ============================================================
+  let currentApplyId = null;
+  const applyCard = document.getElementById("apply-card");
+  const applyName = document.getElementById("apply-name");
+  const applySession = document.getElementById("apply-session");
+  const applyDirection = document.getElementById("apply-direction");
+  const applyGo = document.getElementById("apply-go");
+  const applyResult = document.getElementById("apply-result");
 
   document.querySelectorAll(".apply-btn").forEach((btn) => {
     btn.addEventListener("click", () => {

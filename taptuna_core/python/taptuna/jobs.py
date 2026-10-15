@@ -193,12 +193,13 @@ class Job:
 class JobManager:
     """Реестр задач. Singleton в рамках процесса."""
 
-    def __init__(self, retention_seconds: float = 3600.0):
+    def __init__(self, retention_seconds: float = 300.0):
         self._jobs: dict[str, Job] = {}
         self._lock = threading.RLock()
         self._retention = retention_seconds
 
     def create(self, kind: str, params: Optional[dict[str, Any]] = None) -> Job:
+        self.gc()   # ← очистка завершённых перед созданием нового
         job_id = uuid.uuid4().hex[:12]
         job = Job(job_id, kind, params or {})
         with self._lock:
@@ -278,6 +279,17 @@ class JobManager:
             for jid in list(self._jobs.keys()):
                 j = self._jobs[jid]
                 if j.state in TERMINAL_STATES and j.finished_at and j.finished_at < cutoff:
+                    del self._jobs[jid]
+                    removed += 1
+        return removed
+    
+    def clear_completed(self) -> int:
+        """Удаляет все завершённые jobs. Возвращает число удалённых."""
+        removed = 0
+        with self._lock:
+            for jid in list(self._jobs.keys()):
+                j = self._jobs[jid]
+                if j.state in TERMINAL_STATES:
                     del self._jobs[jid]
                     removed += 1
         return removed

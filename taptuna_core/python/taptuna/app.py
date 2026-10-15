@@ -15,6 +15,8 @@ def create_app(project_dir: Path) -> Flask:
     app = Flask(__name__)
     app.config["PROJECT_DIR"] = Path(project_dir)
     app.config["JSON_AS_ASCII"] = False
+    app.config["TEMPLATES_AUTO_RELOAD"] = True
+    app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
     app.config["MAX_CONTENT_LENGTH"] = 2 * 1024 * 1024 * 1024
     # API
     app.register_blueprint(api_bp, url_prefix="/api")

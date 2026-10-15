@@ -155,6 +155,138 @@ def api_list_projects():
         })
     return _ok({"projects": out})
 
+@bp.route("/projects/<project_id>", methods=["GET"])
+def api_get_project(project_id: str):
+    p = _get_project(project_id)
+    manifest_path = p / "manifest.json"
+    if not manifest_path.exists():
+        return _error(
+            "PROJECT_NOT_INITIALIZED",
+            f"Project {project_id} has no manifest.json — "
+            f"run POST /api/projects or `taptuna init`",
+            409,
+            details={"path": str(p)},
+        )
+    return _ok({
+        "project_id": project_id,
+        "path": str(p),
+        "manifest": load_manifest(p),
+    })
+
+@bp.route("/projects/<project_id>/mark_stale", methods=["POST"])
+def api_mark_stale(project_id: str):
+    """Помечает результаты устаревшими, если есть более новые версии
+    интерпретаций. Возвращает {marked: N}.
+    """
+    p = _get_project(project_id)
+    conn = open_db(p)
+    try:
+        cur = conn.cursor()
+        # Находим results, чей run использовал устаревшую версию интерпретации
+        cur.execute("""
+            UPDATE verification_results
+            SET stale = 1
+            WHERE run_id IN (
+                SELECT vr.id
+                FROM verification_runs vr
+                JOIN interpretations i ON i.id = vr.interpretation_id
+                WHERE EXISTS (
+                    SELECT 1 FROM interpretations i2
+                    WHERE i2.name = i.name AND i2.version > i.version
+                )
+            )
+        """)
+        marked_results = cur.rowcount
+
+        # Помечаем stale и hypothesis_checks, чья гипотеза привязана
+        # к устаревшей версии интерпретации
+        cur.execute("""
+            UPDATE hypothesis_checks
+            SET stale = 1
+            WHERE hypothesis_id IN (
+                SELECT h.id FROM hypotheses h
+                JOIN interpretations i ON i.id = h.interpretation_id
+                WHERE EXISTS (
+                    SELECT 1 FROM interpretations i2
+                    WHERE i2.name = i.name AND i2.version > i.version
+                )
+            )
+        """)
+        marked_checks = cur.rowcount
+
+        conn.commit()
+        return _ok({"marked": marked_results + marked_checks,
+                    "results": marked_results,
+                    "hypothesis_checks": marked_checks})
+    finally:
+        conn.close()
+
+
+@bp.route("/projects/<project_id>/integrity", methods=["GET"])
+def api_integrity(project_id: str):
+    """Проверка целостности проекта: наличие файлов captures, blobs,
+    соответствие user_version.
+
+    Возвращает {ok, project_path, db_user_version, manifest_schema,
+              captures: {total, missing}, blobs: {total, missing},
+              missing_list: [...]}
+    """
+    from .manifest import load_manifest
+
+    p = _get_project(project_id)
+    conn = open_db(p)
+    try:
+        cur = conn.cursor()
+
+        # Captures: файл captures/<sha>.pcap должен существовать
+        cur.execute("SELECT sha256, filename FROM captures")
+        cap_rows = [dict(r) for r in cur.fetchall()]
+        cap_missing = 0
+        missing = []
+        for c in cap_rows:
+            f = p / "captures" / f"{c['sha256']}.pcap"
+            if not f.exists():
+                cap_missing += 1
+                missing.append(f"capture: {c['filename']} ({c['sha256'][:12]}…)")
+
+        # Blobs: файл blobs/<sha>.bin должен существовать для packets
+        # с payload_sha256, где payload_inline IS NULL
+        cur.execute("""
+            SELECT DISTINCT payload_sha256
+            FROM packets
+            WHERE payload_sha256 IS NOT NULL
+              AND payload_inline IS NULL
+        """)
+        blob_rows = cur.fetchall()
+        blob_missing = 0
+        for r in blob_rows:
+            sha = r["payload_sha256"]
+            f = p / "blobs" / f"{sha}.bin"
+            if not f.exists():
+                blob_missing += 1
+                missing.append(f"blob: {sha[:16]}…")
+
+        cur.execute("PRAGMA user_version")
+        db_user_version = cur.fetchone()[0]
+
+        manifest_schema = None
+        try:
+            m = load_manifest(p) if (p / "manifest.json").exists() else {}
+            manifest_schema = m.get("schema_version")
+        except Exception:
+            pass
+
+        return _ok({
+            "ok": cap_missing == 0 and blob_missing == 0,
+            "project_path": str(p),
+            "db_user_version": db_user_version,
+            "manifest_schema": manifest_schema,
+            "captures": {"total": len(cap_rows), "missing": cap_missing},
+            "blobs": {"total": len(blob_rows), "missing": blob_missing},
+            "missing_list": missing,
+        })
+    finally:
+        conn.close()
 
 # --- Ingest (job-based) ---
 
@@ -600,6 +732,39 @@ def api_list_interpretations(project_id: str):
     finally:
         conn.close()
 
+@bp.route("/interpretations/<int:interpretation_id>/fields", methods=["GET"])
+def api_get_interpretation_fields(interpretation_id: int):
+    """Возвращает список полей для подсказки в гипотезах.
+
+    Query params: project_id
+    Ответ: {fields: [{name, type}], framing: {...}}
+    """
+    project_id = request.args.get("project_id")
+    if not project_id:
+        return _error("MISSING_PROJECT", "'project_id' query param required")
+    p = _get_project(project_id)
+    conn = open_db(p)
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT fields_json, framing_json FROM interpretations WHERE id = ?",
+            (interpretation_id,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return _error("NOT_FOUND", "interpretation not found", 404)
+        fields_block = json.loads(row["fields_json"] or "{}")
+        framing = json.loads(row["framing_json"] or "{}")
+        field_list = fields_block.get("fields") or []
+        out = [
+            {"name": f.get("name"), "type": f.get("type")}
+            for f in field_list
+            if f.get("name")
+        ]
+        return _ok({"fields": out, "framing": framing})
+    finally:
+        conn.close()
+
 @bp.route("/interpretations/<int:interpretation_id>/apply", methods=["POST"])
 def api_apply_interpretation(interpretation_id: int):
     """Применить интерпретацию к конкретной сессии/направлению.
@@ -674,6 +839,83 @@ def api_apply_interpretation(interpretation_id: int):
     finally:
         conn.close()
 
+@bp.route("/projects/<project_id>/interpretations/preview", methods=["POST"])
+def api_preview_interpretation(project_id: str):
+    """Preview: применяет спеку (без сохранения) к сессии.
+
+    Тело:
+        framing, fields, constraints (AST) или constraints_text (строки),
+        semantics, session_id, direction
+    Ответ:
+        {messages: [...], total_bytes, direction}
+    """
+    from .interpreters import DeclarativeInterpreter
+    from .verification import _load_stream
+
+    p = _get_project(project_id)
+    body = _body()
+
+    session_id = body.get("session_id")
+    direction = body.get("direction", "a_to_b")
+    if session_id is None:
+        return _error("MISSING_SESSION", "session_id is required")
+    if direction not in ("a_to_b", "b_to_a"):
+        return _error("BAD_DIRECTION", "direction must be a_to_b or b_to_a")
+
+    constraints_obj = body.get("constraints")
+    if constraints_obj is None and body.get("constraints_text"):
+        from .hypotheses import parse_expression
+        constraints_obj = []
+        for i, line in enumerate(body["constraints_text"]):
+            text = (line or "").strip()
+            if not text:
+                continue
+            try:
+                constraints_obj.append(parse_expression(text))
+            except ProtocolLabError as e:
+                return _error(
+                    "BAD_CONSTRAINT",
+                    f"Constraint #{i + 1}: {e.message}",
+                    details={"line": i + 1, "text": text},
+                )
+
+    spec = {
+        "framing": body.get("framing") or {},
+        "fields": body.get("fields") or {},
+        "constraints": constraints_obj or [],
+        "semantics": body.get("semantics") or {},
+    }
+
+    conn = open_db(p)
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT * FROM directions WHERE session_id = ? AND direction = ?",
+            (session_id, direction),
+        )
+        drow = cur.fetchone()
+        if drow is None:
+            return _error("DIRECTION_NOT_FOUND", "direction not found", 404)
+        drow = dict(drow)
+    finally:
+        conn.close()
+
+    stream = _load_stream(p, drow)
+    if not stream:
+        return _ok({"messages": [], "total_bytes": 0, "direction": direction})
+
+    try:
+        interp = DeclarativeInterpreter(spec, "preview", version=0)
+        msgs = interp.interpret(stream, drow["id"])
+    except Exception as e:
+        return _error("INTERPRET_FAILED", f"{type(e).__name__}: {e}", 400)
+
+    return _ok({
+        "messages": [m.to_dict() for m in msgs],
+        "total_bytes": len(stream),
+        "direction": direction,
+    })
+
 @bp.route("/projects/<project_id>/interpretations", methods=["POST"])
 def api_add_interpretation(project_id: str):
     """Добавляет интерпретацию. Тело: {name, kind, source_yaml,
@@ -697,6 +939,29 @@ def api_add_interpretation(project_id: str):
     fields_obj = body.get("fields")
     constraints_obj = body.get("constraints")
     semantics_obj = body.get("semantics")
+
+        # Поддержка constraints как списка выражений (из визуального конструктора)
+    constraints_text = body.get("constraints_text")
+    constraints_text_list: Optional[list[str]] = None
+    if constraints_text and not constraints_obj:
+        from .hypotheses import parse_expression
+        parsed_constraints = []
+        clean_lines: list[str] = []
+        for i, line in enumerate(constraints_text):
+            text = (line or "").strip()
+            if not text:
+                continue
+            try:
+                parsed_constraints.append(parse_expression(text))
+                clean_lines.append(text)
+            except ProtocolLabError as e:
+                return _error(
+                    "BAD_CONSTRAINT",
+                    f"Constraint #{i + 1}: {e.message}",
+                    details={"line": i + 1, "text": text, **(e.details or {})},
+                )
+        constraints_obj = parsed_constraints
+        constraints_text_list = clean_lines
 
     if (framing_obj is None and fields_obj is None and source_yaml.strip()):
         import yaml as _yaml  # type: ignore
@@ -737,10 +1002,13 @@ def api_add_interpretation(project_id: str):
         cur.execute(
             """INSERT INTO interpretations
                (name, version, kind, source_yaml, source_hash,
-                framing_json, fields_json, constraints_json, semantics_json)
-               VALUES (?,?,?,?,?,?,?,?,?)""",
+                framing_json, fields_json, constraints_json, semantics_json,
+                constraints_text_json)
+               VALUES (?,?,?,?,?,?,?,?,?,?)""",
             (name, version, kind, source_yaml, source_hash,
-             framing, fields, constraints, semantics),
+             framing, fields, constraints, semantics,
+             json.dumps(constraints_text_list, ensure_ascii=False)
+             if constraints_text_list else None),
         )
         conn.commit()
         return _ok({"id": cur.lastrowid, "name": name, "version": version}, 201)
@@ -761,7 +1029,34 @@ def api_get_interpretation(interpretation_id: int):
         row = cur.fetchone()
         if row is None:
             return _error("NOT_FOUND", "interpretation not found", 404)
-        return _ok({"interpretation": dict(row)})
+        d = dict(row)
+
+        # Разворачиваем JSON-блоки для редактора
+        try:
+            d["framing_parsed"] = json.loads(d.get("framing_json") or "{}")
+        except Exception:
+            d["framing_parsed"] = {}
+        try:
+            d["fields_parsed"] = json.loads(d.get("fields_json") or "{}")
+        except Exception:
+            d["fields_parsed"] = {}
+        try:
+            d["constraints_parsed"] = json.loads(d.get("constraints_json") or "[]")
+        except Exception:
+            d["constraints_parsed"] = []
+        try:
+            d["semantics_parsed"] = json.loads(d.get("semantics_json") or "{}")
+        except Exception:
+            d["semantics_parsed"] = {}
+        try:
+            d["constraints_text_list"] = (
+                json.loads(d["constraints_text_json"])
+                if d.get("constraints_text_json") else []
+            )
+        except Exception:
+            d["constraints_text_list"] = []
+
+        return _ok({"interpretation": d})
     finally:
         conn.close()
 
@@ -1026,7 +1321,12 @@ def api_list_hypotheses(project_id: str):
     conn = open_db(p)
     try:
         cur = conn.cursor()
-        cur.execute("SELECT * FROM hypotheses ORDER BY id")
+        cur.execute("""SELECT id, formulation, status, auto_status,
+                              expression_text, interpretation_id,
+                              checked_count, satisfied_count, violated_count,
+                              error_count, not_applicable_count,
+                              notes, last_check_at, created_at
+                       FROM hypotheses ORDER BY id DESC""")
         return _ok({"hypotheses": [dict(r) for r in cur.fetchall()]})
     finally:
         conn.close()
@@ -1039,18 +1339,188 @@ def api_create_hypothesis(project_id: str):
     formulation = body.get("formulation")
     if not formulation:
         return _error("MISSING_FORMULATION", "'formulation' required")
+
     status = body.get("status", "open")
+    expression_text = body.get("expression_text")
+    interpretation_id = body.get("interpretation_id")
+    scope = body.get("scope") or {}
+
+    notes = body.get("notes") or None
+    observation_ids = body.get("observation_ids") or []
+
+    expression_json = None
+    if expression_text:
+        from .hypotheses import parse_expression, extract_field_names
+        try:
+            expr = parse_expression(expression_text)
+            expression_json = json.dumps(expr, ensure_ascii=False)
+        except ProtocolLabError as e:
+            return _error(e.code, e.message, e.http_status, e.details)
+
+        # Валидация: все поля выражения должны быть в интерпретации
+        if interpretation_id is not None:
+            conn_check = open_db(p)
+            try:
+                cur2 = conn_check.cursor()
+                cur2.execute(
+                    "SELECT fields_json FROM interpretations WHERE id = ?",
+                    (interpretation_id,),
+                )
+                row2 = cur2.fetchone()
+                if row2 is not None:
+                    fields_block = json.loads(row2["fields_json"] or "{}")
+                    available = {
+                        f.get("name")
+                        for f in (fields_block.get("fields") or [])
+                        if f.get("name")
+                    }
+                    used = extract_field_names(expr)
+                    missing = used - available
+                    if missing:
+                        return _error(
+                            "MISSING_FIELDS",
+                            f"Expression uses fields that interpretation does not extract: "
+                            f"{sorted(missing)}. Available: {sorted(available)}",
+                            details={
+                                "missing": sorted(missing),
+                                "available": sorted(available),
+                            },
+                        )
+            finally:
+                conn_check.close()
+
     conn = open_db(p)
     try:
         cur = conn.cursor()
         cur.execute(
-            "INSERT INTO hypotheses (formulation, status) VALUES (?,?)",
-            (formulation, status),
+            """INSERT INTO hypotheses
+               (formulation, status, expression_json, expression_text,
+                interpretation_id, scope_json, auto_status, notes)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (formulation, status, expression_json, expression_text,
+             interpretation_id,
+             json.dumps(scope, ensure_ascii=False) if scope else None,
+             "unknown", notes),
         )
+        hyp_id = cur.lastrowid
+
+        # Связи с наблюдениями
+        for oid in observation_ids:
+            try:
+                cur.execute(
+                    """INSERT OR IGNORE INTO hypothesis_observations
+                       (hypothesis_id, observation_id, role)
+                       VALUES (?,?,?)""",
+                    (hyp_id, int(oid), "evidence"),
+                )
+            except Exception:
+                pass
+
         conn.commit()
-        return _ok({"id": cur.lastrowid, "status": status}, 201)
+        return _ok({
+            "id": hyp_id,
+            "status": status,
+            "has_expression": expression_json is not None,
+            "observations_linked": len(observation_ids),
+        }, 201)
     finally:
         conn.close()
+
+
+@bp.route("/projects/<project_id>/hypotheses/<int:hyp_id>", methods=["DELETE"])
+def api_delete_hypothesis(project_id: str, hyp_id: int):
+    p = _get_project(project_id)
+    conn = open_db(p)
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT id FROM hypotheses WHERE id = ?", (hyp_id,))
+        if cur.fetchone() is None:
+            return _error("NOT_FOUND", "hypothesis not found", 404)
+        cur.execute("DELETE FROM hypotheses WHERE id = ?", (hyp_id,))
+        conn.commit()
+        return _ok({"deleted": hyp_id})
+    finally:
+        conn.close()
+
+
+@bp.route("/projects/<project_id>/hypotheses/<int:hyp_id>/check", methods=["POST"])
+def api_check_hypothesis(project_id: str, hyp_id: int):
+    """Запускает проверку гипотезы на корпусе.
+
+    Тело: {run_id: optional}. Если run_id не указан — берётся последний
+    завершённый прогон для интерпретации гипотезы.
+    """
+    from .hypotheses import check_hypothesis
+
+    p = _get_project(project_id)
+    body = _body()
+    run_id = body.get("run_id")
+
+    mgr = get_job_manager()
+
+    def worker(job):
+        def _progress(msg: str, frac: float) -> None:
+            if job.is_cancelled():
+                raise JobCancelled()
+            job.progress(msg, frac)
+
+        return check_hypothesis(
+            project_dir=p,
+            hypothesis_id=hyp_id,
+            run_id=int(run_id) if run_id is not None else None,
+            progress=_progress,
+            cancel_check=lambda: job.is_cancelled(),
+        )
+
+    job = mgr.run("hypothesis_check", worker, params={
+        "project_id": project_id,
+        "hypothesis_id": hyp_id,
+        "run_id": run_id,
+    })
+    return _ok({"job_id": job.id, "state": job.state.value}, 202)
+
+
+@bp.route("/projects/<project_id>/hypotheses/<int:hyp_id>/checks", methods=["GET"])
+def api_get_hypothesis_checks(project_id: str, hyp_id: int):
+    """Результаты проверки гипотезы + связанные наблюдения."""
+    from .hypotheses import get_hypothesis_checks, get_hypothesis_observations
+
+    p = _get_project(project_id)
+    result = request.args.get("result")
+    limit = int(request.args.get("limit", 200))
+    offset = int(request.args.get("offset", 0))
+    conn = open_db(p)
+    try:
+        checks = get_hypothesis_checks(
+            conn, hyp_id, result=result, limit=limit, offset=offset
+        )
+        observations = get_hypothesis_observations(conn, hyp_id)
+        return _ok({"checks": checks, "observations": observations})
+    finally:
+        conn.close()
+
+
+@bp.route("/projects/<project_id>/hypotheses/validate", methods=["POST"])
+def api_validate_expression(project_id: str):
+    """Парсит выражение и возвращает AST без сохранения.
+
+    Тело: {expression_text}
+    Ответ: {valid: true, ast: {...}} или {valid: false, error: {...}}
+    """
+    from .hypotheses import parse_expression
+
+    body = _body()
+    text = body.get("expression_text")
+    if not text:
+        return _error("MISSING_EXPRESSION", "'expression_text' required")
+    try:
+        expr = parse_expression(text)
+        return _ok({"valid": True, "ast": expr})
+    except ProtocolLabError as e:
+        return _ok({
+            "valid": False,
+            "error": {"code": e.code, "message": e.message, "details": e.details},
+        })
 
 
 # --- Action log ---
@@ -1205,23 +1675,13 @@ def api_cancel_job(job_id: str):
                       f"job {job_id} not cancellable or not found", 404)
     return _ok({"cancelled": True})
 
-@bp.route("/projects/<project_id>", methods=["GET"])
-def api_get_project(project_id: str):
-    p = _get_project(project_id)
-    manifest_path = p / "manifest.json"
-    if not manifest_path.exists():
-        return _error(
-            "PROJECT_NOT_INITIALIZED",
-            f"Project {project_id} has no manifest.json — "
-            f"run POST /api/projects or `taptuna init`",
-            409,
-            details={"path": str(p)},
-        )
-    return _ok({
-        "project_id": project_id,
-        "path": str(p),
-        "manifest": load_manifest(p),
-    })
+@bp.route("/jobs/clear", methods=["POST"])
+def api_clear_jobs():
+    """Удаляет все завершённые jobs из реестра."""
+    mgr = get_job_manager()
+    n = mgr.clear_completed()
+    return _ok({"removed": n})
+
 # ---------------------------------------------------------------------------
 # Error handlers
 # ---------------------------------------------------------------------------

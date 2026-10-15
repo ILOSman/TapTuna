@@ -65,9 +65,18 @@
   <div class="row">
     <button id="revalidate-btn">Пометить stale</button>
     <button id="export-btn">Показать содержимое проекта</button>
+    <button id="integrity-btn">Проверить целостность</button>
   </div>
-  <pre id="util-out" class="mono small" style="max-height:300px; overflow:auto; background:#fbfbfd; padding:0.5rem; margin-top:0.6rem; display:none">—</pre>
+  <pre id="util-out" class="mono small" style="max-height:400px; overflow:auto; background:#fbfbfd; padding:0.5rem; margin-top:0.6rem; display:none">—</pre>
 </section>
+
+<script>
+// Данные проекта передаём через data-атрибут, без tojson-фильтра в JS.
+window.__TAPTUNA_PROJECT__ = {
+  name: "{{ project_name }}",
+  path: "{{ project_path }}",
+};
+</script>
 
 {% endblock %}
 
@@ -76,35 +85,89 @@
 (function () {
   const revalidateBtn = document.getElementById("revalidate-btn");
   const exportBtn = document.getElementById("export-btn");
+  const integrityBtn = document.getElementById("integrity-btn");
   const utilOut = document.getElementById("util-out");
 
+  function showOut(text) {
+    utilOut.style.display = "block";
+    utilOut.textContent = text;
+  }
+
   revalidateBtn.addEventListener("click", async () => {
-    // Локальный вызов: помечаем stale по актуальным версиям интерпретаций.
-    // Без API-endpoint: просто редирект с сообщением.
+    utilOut.style.display = "block";
+    utilOut.textContent = "пометка stale...";
     try {
-      // Используем прямой запрос через API проекта.
-      // Простой способ — открыть тот же проект через CLI:
-      window.taptuna.toast("Обновите stale через CLI: taptuna runs", "ok");
-    } catch (e) {}
+      const d = await window.taptuna.api("POST",
+        "/api/projects/{{ project_name }}/mark_stale", {});
+      showOut("Помечено stale: " + d.marked + " результатов.\n\n" +
+              "Обновите страницу, чтобы увидеть изменения в сводке.");
+      window.taptuna.toast("Помечено: " + d.marked, "ok");
+    } catch (e) {
+      showOut("Ошибка: " + e.message);
+    }
   });
 
   exportBtn.addEventListener("click", async () => {
     utilOut.style.display = "block";
     utilOut.textContent = "загрузка...";
     try {
-      const d = await window.taptuna.api("GET",
-        "/api/projects/{{ project_name }}/captures");
-      utilOut.textContent = JSON.stringify({
-        project_path: "{{ project_path }}",
-        manifest: {
-          app_version: "{{ manifest.app_version or '' }}",
-          tshark_version: "{{ manifest.tshark_version or '' }}",
-          policies: {{ manifest.policies | tojson }},
+      const [caps, interps, corpora, runs, hyps, obs] = await Promise.all([
+        window.taptuna.api("GET", "/api/projects/{{ project_name }}/captures"),
+        window.taptuna.api("GET", "/api/projects/{{ project_name }}/interpretations"),
+        window.taptuna.api("GET", "/api/projects/{{ project_name }}/corpora"),
+        window.taptuna.api("GET", "/api/verification_runs?project_id={{ project_name }}"),
+        window.taptuna.api("GET", "/api/projects/{{ project_name }}/hypotheses"),
+        window.taptuna.api("GET", "/api/projects/{{ project_name }}/observations"),
+      ]);
+      const snapshot = {
+        project: window.__TAPTUNA_PROJECT__ || {name: "{{ project_name }}"},
+        captures: (caps.captures || []).length,
+        interpretations: (interps.interpretations || []).length,
+        corpora: (corpora.corpora || []).length,
+        verification_runs: (runs.runs || []).length,
+        hypotheses: (hyps.hypotheses || []).length,
+        observations: (obs.observations || []).length,
+        details: {
+          captures: caps.captures || [],
+          interpretations: interps.interpretations || [],
+          corpora: corpora.corpora || [],
+          runs: runs.runs || [],
         },
-        captures: d.captures || [],
-      }, null, 2);
+      };
+      showOut(JSON.stringify(snapshot, null, 2));
     } catch (e) {
-      utilOut.textContent = "ошибка: " + e.message;
+      showOut("Ошибка: " + e.message);
+    }
+  });
+
+  integrityBtn.addEventListener("click", async () => {
+    utilOut.style.display = "block";
+    utilOut.textContent = "проверка...";
+    try {
+      const d = await window.taptuna.api("GET",
+        "/api/projects/{{ project_name }}/integrity");
+      let lines = [];
+      lines.push("Проект: " + d.project_path);
+      lines.push("user_version: " + d.db_user_version);
+      lines.push("manifest schema: " + d.manifest_schema);
+      lines.push("");
+      lines.push("Captures: " + d.captures.total +
+                 ", missing files: " + d.captures.missing);
+      lines.push("Blobs: " + d.blobs.total +
+                 ", missing files: " + d.blobs.missing);
+      if (d.missing_list && d.missing_list.length) {
+        lines.push("");
+        lines.push("Отсутствуют:");
+        for (const m of d.missing_list.slice(0, 20)) lines.push("  " + m);
+        if (d.missing_list.length > 20) {
+          lines.push("  ... и ещё " + (d.missing_list.length - 20));
+        }
+      }
+      lines.push("");
+      lines.push(d.ok ? "✓ Целостность в порядке" : "✗ Найдены проблемы");
+      showOut(lines.join("\n"));
+    } catch (e) {
+      showOut("Ошибка: " + e.message);
     }
   });
 })();

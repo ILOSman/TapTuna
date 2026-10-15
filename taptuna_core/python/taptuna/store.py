@@ -10,7 +10,7 @@ import hashlib
 from pathlib import Path
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 4
 
 # --- DDL: 14 tables from ТЗ §14 ---
 
@@ -254,6 +254,61 @@ DDL_INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_verification_runs_interp ON verification_runs(interpretation_id)",
 ]
 
+# --- Migration 2: executable hypotheses (ТЗ §9) ---
+#
+# Гипотеза = safe-eval выражение, вычисляемое на извлечённых полях
+# сообщения. Результаты проверки сохраняются в hypothesis_checks.
+DDL_V2 = [
+    # Добавляем поля в hypotheses
+    "ALTER TABLE hypotheses ADD COLUMN expression_json TEXT",
+    "ALTER TABLE hypotheses ADD COLUMN expression_text TEXT",
+    "ALTER TABLE hypotheses ADD COLUMN interpretation_id INTEGER REFERENCES interpretations(id)",
+    "ALTER TABLE hypotheses ADD COLUMN scope_json TEXT",
+    "ALTER TABLE hypotheses ADD COLUMN auto_status TEXT",
+    "ALTER TABLE hypotheses ADD COLUMN checked_count INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE hypotheses ADD COLUMN satisfied_count INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE hypotheses ADD COLUMN violated_count INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE hypotheses ADD COLUMN error_count INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE hypotheses ADD COLUMN last_check_at TEXT",
+
+    # Таблица результатов проверки
+    """
+    CREATE TABLE IF NOT EXISTS hypothesis_checks (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        hypothesis_id INTEGER NOT NULL REFERENCES hypotheses(id) ON DELETE CASCADE,
+        session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        direction_id INTEGER NOT NULL REFERENCES directions(id) ON DELETE CASCADE,
+        message_index INTEGER,
+        stream_offset INTEGER,
+        length INTEGER,
+        result TEXT NOT NULL CHECK (result IN ('satisfied', 'violated', 'not_applicable', 'error')),
+        fields_json TEXT,
+        notes TEXT,
+        checked_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_hyp_checks_hyp_result ON hypothesis_checks(hypothesis_id, result)",
+    "CREATE INDEX IF NOT EXISTS idx_hyp_checks_hyp_id ON hypothesis_checks(hypothesis_id, id)",
+]
+
+# --- Migration 3: source of constraints as text (для редактора) ---
+#
+# constraints_json хранит AST. Чтобы редактор мог показать исходные
+# строки, которые ввёл пользователь, сохраняем их отдельно.
+DDL_V3 = [
+    "ALTER TABLE interpretations ADD COLUMN constraints_text_json TEXT",
+]
+
+# --- Migration 4: связи гипотез с наблюдениями, заметки, stale ---
+DDL_V4 = [
+    # Заметки исследователя и точные счётчики
+    "ALTER TABLE hypotheses ADD COLUMN notes TEXT",
+    "ALTER TABLE hypotheses ADD COLUMN not_applicable_count INTEGER NOT NULL DEFAULT 0",
+
+    # stale для устаревших проверок гипотез (новая версия интерпретации)
+    "ALTER TABLE hypothesis_checks ADD COLUMN stale BOOLEAN NOT NULL DEFAULT 0",
+    "CREATE INDEX IF NOT EXISTS idx_hyp_checks_stale ON hypothesis_checks(stale)",
+]
 
 def get_db(project_dir: Path) -> sqlite3.Connection:
     """Открывает соединение с project.sqlite в каталоге проекта.
@@ -430,13 +485,38 @@ def migrate(db_path: Path) -> int:
             conn.execute(ddl)
         for ddl in DDL_INDEXES:
             conn.execute(ddl)
-        # Инициализация meta
         conn.execute(
             "INSERT OR REPLACE INTO meta(key, value) VALUES(?, ?)",
             ("schema_version", str(SCHEMA_VERSION)),
         )
         set_user_version(conn, 1)
         conn.commit()
+        current = 1   # ← обновляем локальную переменную
+
+    # Миграция 2
+    if current == 1:
+        for ddl in DDL_V2:
+            conn.execute(ddl)
+        conn.execute(
+            "UPDATE hypotheses SET auto_status = 'unknown' WHERE auto_status IS NULL"
+        )
+        set_user_version(conn, 2)
+        conn.commit()
+        current = 2
+    
+    if current == 2:
+        for ddl in DDL_V3:
+            conn.execute(ddl)
+        set_user_version(conn, 3)
+        conn.commit()
+        current = 3
+
+    if current == 3:
+        for ddl in DDL_V4:
+            conn.execute(ddl)
+        set_user_version(conn, 4)
+        conn.commit()
+        current = 4
 
     # Будущие миграции добавлять здесь как elif current == 1: ...
 
@@ -456,8 +536,25 @@ def init_db(project_dir: Path) -> sqlite3.Connection:
 
 
 def open_db(project_dir: Path) -> sqlite3.Connection:
-    """Открывает существующую БД проекта (без миграций)."""
+    """Открывает существующую БД проекта и применяет недостающие миграции.
+
+    Если проект создан старой версией taptuna — миграция выполнится
+    прозрачно при первом обращении. Проверка через PRAGMA user_version:
+    если версия актуальна — второй connection не открывается.
+    """
     db_path = project_dir / "project.sqlite"
     if not db_path.exists():
         raise FileNotFoundError(f"Database not found: {db_path}")
+
+    conn = get_db(project_dir)
+    try:
+        current = get_user_version(conn)
+    except Exception:
+        current = 0
+    if current >= SCHEMA_VERSION:
+        return conn
+
+    # Версия устарела — закрываем, мигрируем, открываем заново
+    conn.close()
+    migrate(db_path)
     return get_db(project_dir)

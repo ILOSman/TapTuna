@@ -29,6 +29,8 @@ fn parse_field_type(s: &str, digits: Option<usize>) -> PyResult<FieldType> {
         "bcd" => FieldType::Bcd {
             digits: digits.unwrap_or(2),
         },
+        // "expression" обрабатывается отдельно в extract_fields,
+        // потому что требует чтения AST из поля `expr`.
         other => {
             return Err(pyo3::exceptions::PyValueError::new_err(format!(
                 "unknown field type: {}",
@@ -101,8 +103,39 @@ fn extract_fields(
     let mut fields = Vec::with_capacity(fields_list.len());
     for f in fields_list {
         let fd: &Bound<'_, PyDict> = f.downcast()?;
-        let name: String = fd.get_item("name")?.unwrap().extract()?;
-        let ftype_str: String = fd.get_item("type")?.unwrap().extract()?;
+        let field_name: String = fd
+            .get_item("name")?
+            .ok_or_else(|| {
+                pyo3::exceptions::PyValueError::new_err("field must contain 'name'")
+            })?
+            .extract()?;
+        let ftype_str: String = fd
+            .get_item("type")?
+            .ok_or_else(|| {
+                pyo3::exceptions::PyValueError::new_err("field must contain 'type'")
+            })?
+            .extract()?;
+
+        if ftype_str == "expression" {
+            // Вычисляемое поле: читаем AST из поля `expr`.
+            let expr_obj = fd.get_item("expr")?.ok_or_else(|| {
+                pyo3::exceptions::PyValueError::new_err(format!(
+                    "field '{}': type 'expression' requires 'expr' (safe_eval AST)",
+                    field_name
+                ))
+            })?;
+            let expr = parse_expr_pub(&expr_obj)?;
+            fields.push(FieldSpec {
+                name: field_name,
+                field_type: FieldType::Expression(Box::new(expr)),
+                // offset/size игнорируются при extract для Expression,
+                // но структура требует их наличия.
+                offset: OffsetSpec::Auto,
+                size: SizeSpec::Remaining,
+            });
+            continue;
+        }
+
         let digits: Option<usize> = fd
             .get_item("digits")?
             .map(|v| v.extract())
@@ -111,7 +144,7 @@ fn extract_fields(
         let offset = parse_offset(&fd.get_item("offset")?.unwrap())?;
         let size = parse_size(&fd.get_item("size")?.unwrap())?;
         fields.push(FieldSpec {
-            name,
+            name: field_name,
             field_type: ftype,
             offset,
             size,

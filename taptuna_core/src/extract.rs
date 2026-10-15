@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use crate::safe_eval::{eval, EvalContext, EvalError, Expr, Value};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub enum FieldType {
     U8,
     I8,
@@ -23,6 +23,9 @@ pub enum FieldType {
     Bcd { digits: usize },
     Utf8,
     Ascii,
+    /// Вычисляемое поле: значение = safe_eval-выражение над уже
+    /// извлечёнными полями. Байты не читаются.
+    Expression(Box<Expr>),
 }
 
 #[derive(Debug, Clone)]
@@ -79,6 +82,8 @@ pub enum ExtractError {
     BadBcd(usize),
     #[error("utf8 decode error")]
     Utf8,
+    #[error("expression field cannot be decoded from bytes")]
+    ExpressionNotDecodable,
 }
 
 pub fn extract(
@@ -89,6 +94,15 @@ pub fn extract(
     let mut cursor: u64 = 0;
 
     for (i, f) in spec.fields.iter().enumerate() {
+        // Expression: не читаем байты, вычисляем значение из уже
+        // извлечённых полей.
+        if let FieldType::Expression(expr) = &f.field_type {
+            let ctx = make_ctx(&fields);
+            let val = eval(expr, &ctx)?;
+            fields.insert(f.name.clone(), val);
+            continue;
+        }
+
         // Resolve offset.
         let offset = match &f.offset {
             OffsetSpec::Fixed(o) => *o,
@@ -207,6 +221,11 @@ fn decode(ft: FieldType, b: &[u8]) -> Result<Value, ExtractError> {
             }
             Value::Str(s)
         }
+        FieldType::Expression(_) => {
+            // Не должно случиться: обработка Expression — в `extract`
+            // до вызова decode. Если всё-таки пришли — ошибка.
+            return Err(ExtractError::ExpressionNotDecodable);
+        }
     })
 }
 
@@ -246,7 +265,7 @@ fn need_n(b: &[u8], n: usize) -> Result<&[u8], ExtractError> {
 mod tests {
     use super::*;
 
-        fn bytes_len_field(name: &str) -> FieldSpec {
+    fn bytes_len_field(name: &str) -> FieldSpec {
         FieldSpec {
             name: name.into(),
             field_type: FieldType::U16Be,
@@ -258,7 +277,6 @@ mod tests {
     #[test]
     fn simple_header() {
         // magic (2) | len (2) | payload (len bytes)
-        // NOTE: first field must use Fixed(0), not Auto.
         let spec = MessageSpec {
             name: "test".into(),
             fields: vec![
@@ -286,8 +304,6 @@ mod tests {
 
     #[test]
     fn too_short() {
-        // Fixed(0) — чтобы первое поле не падало на AutoOnFirst,
-        // а тест проверял именно нехватку байт.
         let spec = MessageSpec {
             name: "t".into(),
             fields: vec![FieldSpec {
@@ -303,5 +319,37 @@ mod tests {
             "expected TooShort, got {:?}",
             err
         );
+    }
+
+    #[test]
+    fn expression_field() {
+        // temp_raw (2 BE) | temp = temp_raw / 10
+        use crate::safe_eval::{Expr, Value as V};
+        let expr = Expr::FloorDiv(
+            Box::new(Expr::Field("temp_raw".into())),
+            Box::new(Expr::Const(V::Int(10))),
+        );
+        let spec = MessageSpec {
+            name: "t".into(),
+            fields: vec![
+                FieldSpec {
+                    name: "temp_raw".into(),
+                    field_type: FieldType::U16Be,
+                    offset: OffsetSpec::Fixed(0),
+                    size: SizeSpec::Fixed(2),
+                },
+                FieldSpec {
+                    name: "temp".into(),
+                    field_type: FieldType::Expression(Box::new(expr)),
+                    offset: OffsetSpec::Auto,
+                    size: SizeSpec::Remaining,
+                },
+            ],
+        };
+        // temp_raw = 0x0123 = 291 → temp = 29
+        let msg = b"\x01\x23";
+        let out = extract(&spec, msg).unwrap();
+        assert_eq!(out.get("temp_raw"), Some(&Value::UInt(0x0123)));
+        assert_eq!(out.get("temp"), Some(&Value::UInt(29)));
     }
 }
