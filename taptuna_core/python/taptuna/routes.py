@@ -50,8 +50,8 @@ from .verification import (
 # Хелперы
 # ---------------------------------------------------------------------------
 
-# Реестр открытых проектов: project_id -> Path. Singleton в памяти.
-_PROJECTS: dict[str, Path] = {}
+# Реестр проектов живёт в taptuna.projects (JSON в ~/TapTuna/projects.json).
+# Здесь его только читаем. project_id в URL == имя папки проекта.
 
 
 def _error(code: str, message: str, http_status: int = 400,
@@ -67,32 +67,55 @@ def _ok(data: Any, status: int = 200) -> Response:
     return jsonify(data), status
 
 
-def _get_project(project_id: str) -> Path:
-    """Возвращает каталог проекта.
+def _active_project_dir() -> Optional[Path]:
+    """Путь к активному проекту или None (GUI-режим)."""
+    p = current_app.config.get("PROJECT_DIR")
+    return Path(p) if p else None
 
-    Если project_id совпадает с дефолтным проектом из app.config —
-    возвращает его. Иначе ищет в реестре, пополняемом через
-    POST /projects.
+
+def _require_project() -> Path:
+    """Возвращает активный проект или бросает PROJECT_NOT_ACTIVE.
+
+    Используется эндпоинтами, которые не имеют project_id в URL
+    и работают с «текущим» проектом. В GUI-режиме (без проекта)
+    возвращает 409, чтобы UI показал /welcome.
     """
-    default = current_app.config.get("PROJECT_DIR")
-    if default is not None:
-        default = Path(default)
-        # Совпадение по имени каталога
-        if default.name == project_id:
-            return default
-    p = _PROJECTS.get(project_id)
+    p = _active_project_dir()
     if p is None:
         raise ValidationError(
-            code="PROJECT_NOT_FOUND",
-            message=f"Project {project_id} not found",
-            details={"project_id": project_id},
+            code="PROJECT_NOT_ACTIVE",
+            message="No active project. Open or create one via /welcome.",
+            details={},
         )
     return p
 
 
+def _get_project(project_id: str) -> Path:
+    """Возвращает каталог проекта по имени папки (project_id).
+
+    Порядок:
+    1. Активный проект, если его имя совпадает.
+    2. Реестр (projects.list_projects()).
+    """
+    from . import projects as pj
+
+    active = _active_project_dir()
+    if active is not None and active.name == project_id:
+        return active
+
+    for p in pj.list_projects():
+        if p.get("name") == project_id:
+            return Path(p["path"])
+
+    raise ValidationError(
+        code="PROJECT_NOT_FOUND",
+        message=f"Project {project_id} not found in registry",
+        details={"project_id": project_id},
+    )
+
+
 def _body() -> dict:
     return request.get_json(silent=True) or {}
-
 
 # ---------------------------------------------------------------------------
 # Blueprint
@@ -100,70 +123,304 @@ def _body() -> dict:
 
 bp = Blueprint("taptuna", __name__)
 
+# --- System ---
+
+@bp.route("/system/tshark", methods=["GET"])
+def api_tshark_status():
+    """Проверка tshark. Используется UI-страницей /setup-tshark.
+
+    Ответ:
+        {ok: bool, path: str|None, version: str|None, hint: str|None}
+    """
+    from .tshark_check import get_tshark_path, get_tshark_version_raw
+
+    path = get_tshark_path()
+    if path:
+        ok, ver = get_tshark_version_raw()
+        return _ok({
+            "ok": bool(ok),
+            "path": path,
+            "version": ver,
+            "hint": None if ok else "tshark найден, но не запускается. "
+                                    "Проверьте права: tshark должен быть в PATH.",
+        })
+    return _ok({
+        "ok": False,
+        "path": None,
+        "version": None,
+        "hint": (
+            "Установите tshark:\n"
+            "  Ubuntu / Debian:  sudo apt install tshark\n"
+            "  Fedora:           sudo dnf install wireshark-cli\n"
+            "  Arch:             sudo pacman -S wireshark-cli"
+        ),
+    })
+
+
+def _find_project_any(key: str) -> Optional[dict]:
+    """Находит проект в реестре по id (sha1-hex) ИЛИ по display-имени.
+
+    Ключ может быть любым — UI исторически использует name, новые
+    ручки предпочитают id. Оба должны работать.
+    """
+    from . import projects as pj
+    key = (key or "").strip()
+    if not key:
+        return None
+    for p in pj.list_projects():
+        if p.get("id") == key or p.get("name") == key:
+            return p
+    return None
+
 
 # --- Projects ---
 
-@bp.route("/projects", methods=["POST"])
-def api_create_project():
-    body = _body()
-    project_dir = body.get("path")
-    if not project_dir:
-        return _error("MISSING_PATH", "Field 'path' is required")
-    project_path = Path(project_dir).resolve()
-    project_path.mkdir(parents=True, exist_ok=True)
-
-    if not (project_path / "manifest.json").exists():
-        create_manifest(project_path)
-    init_db(project_path)
-
-    project_id = body.get("project_id") or project_path.name
-    _PROJECTS[project_id] = project_path
-
-    # Если в конфиге проекта ещё нет — привязываем этот
-    if current_app.config.get("PROJECT_DIR") is None:
-        current_app.config["PROJECT_DIR"] = project_path
-
-    return _ok({
-        "project_id": project_id,
-        "path": str(project_path),
-        "manifest": load_manifest(project_path),
-    }, 201)
-
 @bp.route("/projects", methods=["GET"])
 def api_list_projects():
-    """Список проектов в реестре + дефолтный из конфига."""
-    out: list[dict] = []
-    seen: set[str] = set()
+    """Список проектов из реестра + активный.
 
-    default = current_app.config.get("PROJECT_DIR")
-    if default is not None:
-        default = Path(default)
-        seen.add(default.name)
-        out.append({
-            "project_id": default.name,
-            "path": str(default),
-            "is_default": True,
-        })
+    Ответ:
+        {
+          "projects": [{id, name, path, created_at, last_opened, size_bytes}],
+          "active_id": "0dcb7e07565e" | null,   # реестровый id, стабильный
+          "active_name": "sensor_demo" | null,  # display-имя, для UI
+        }
 
-    for pid, path in _PROJECTS.items():
-        if pid in seen:
-            continue
-        out.append({
-            "project_id": pid,
-            "path": str(path),
-            "is_default": False,
-        })
-    return _ok({"projects": out})
+    active_id — это id из реестра, а не имя папки: id не меняется
+    при переименовании display-имени и не путается с путём.
+    """
+    from . import projects as pj
+
+    items = pj.list_projects()
+    active = _active_project_dir()
+    active_id = None
+    active_name = None
+    if active is not None:
+        entry = pj.find_by_path(active)
+        if entry:
+            active_id = entry["id"]
+            active_name = entry["name"]
+        else:
+            active_name = active.name
+
+    return _ok({
+        "projects": items,
+        "active_id": active_id,
+        "active_name": active_name,
+    })
+
+
+@bp.route("/projects/create", methods=["POST"])
+def api_create_project():
+    """Создать новый проект.
+
+    Body: {"name": "sensor1", "parent": "/optional/path"}
+    Ответ: {id, name, path, created_at, last_opened}
+    Проект сразу становится активным.
+    """
+    from . import projects as pj
+
+    body = _body()
+    name = (body.get("name") or "").strip()
+    if not name:
+        return _error("MISSING_NAME", "'name' is required")
+
+    parent = body.get("parent")
+    try:
+        info = pj.create_project(name, Path(parent) if parent else None)
+    except ValidationError as e:
+        return _error(e.code, e.message, e.http_status, e.details)
+
+    current_app.config["PROJECT_DIR"] = Path(info["path"])
+    return _ok(info, 201)
+
+
+@bp.route("/projects/open", methods=["POST"])
+def api_open_project():
+    """Сделать проект активным.
+
+    Body: {"id": "..."} — принимается И реестровый id, И display-имя.
+    """
+    body = _body()
+    key = body.get("id") or body.get("project_id")
+    if not key:
+        return _error("MISSING_ID", "'id' is required")
+
+    match = _find_project_any(key)
+    if match is None:
+        return _error("PROJECT_NOT_FOUND",
+                      f"Project {key} not in registry", 404)
+
+    current_app.config["PROJECT_DIR"] = Path(match["path"])
+    return _ok(match)
+
+
+@bp.route("/projects/import", methods=["POST"])
+def api_import_project():
+    """Импорт .taptuna.zip.
+
+    Два режима:
+    A. multipart/form-data с полем 'file' — загрузка из браузера.
+       Дополнительно: form-поле 'parent' (каталог распаковки).
+    B. application/json {"source_path": "...", "parent": "..."} — путь
+       на диске сервера (CLI, Electron).
+
+    Проект регистрируется и становится активным.
+    """
+    import shutil
+    import tempfile
+    from . import projects as pj
+
+    parent_path: Optional[Path] = None
+    tmpdir: Optional[Path] = None
+    try:
+        preferred_name: Optional[str] = None
+        if "file" in request.files:
+            f = request.files["file"]
+            if not f.filename:
+                return _error("EMPTY_FILE", "uploaded file has no name")
+            if not f.filename.lower().endswith(".zip"):
+                return _error(
+                    "BAD_EXTENSION",
+                    f"expected .zip or .taptuna.zip, got {f.filename!r}",
+                )
+            parent_raw = request.form.get("parent")
+            if parent_raw:
+                parent_path = Path(parent_raw).expanduser()
+
+            # ← ИЗМЕНЕНО: сохраняем с оригинальным именем файла,
+            #   чтобы import_zip взял имя проекта из sensor1.taptuna.zip,
+            #   а не из временного upload.zip.
+            #
+            #   basename через Path().name — защита от "/" в filename.
+            safe_name = Path(f.filename).name or "upload.zip"
+            if not safe_name.lower().endswith(".zip"):
+                safe_name += ".zip"
+            tmpdir = Path(tempfile.mkdtemp(prefix="taptuna_import_"))
+            tmp_zip = tmpdir / safe_name
+            f.save(str(tmp_zip))
+            src_path = tmp_zip
+            preferred_name = f.filename
+        else:
+            body = _body()
+            src = body.get("source_path")
+            if not src:
+                return _error(
+                    "MISSING_SOURCE",
+                    "provide either 'file' (multipart) or 'source_path' (json)",
+                )
+            src_path = Path(src).expanduser()
+            parent_raw = body.get("parent")
+            if parent_raw:
+                parent_path = Path(parent_raw).expanduser()
+            preferred_name = body.get("name")
+
+        try:
+            info = pj.import_zip(src_path, parent_path,
+                                 preferred_name=preferred_name)
+        except ValidationError as e:
+            return _error(e.code, e.message, e.http_status, e.details)
+
+        current_app.config["PROJECT_DIR"] = Path(info["path"])
+        return _ok(info, 201)
+    finally:
+        if tmpdir is not None:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+@bp.route("/projects/<project_id>/export", methods=["POST"])
+def api_export_project(project_id: str):
+    """Экспорт проекта в .taptuna.zip.
+
+    Body: {"target_path": "/path/to/save/sensor1.taptuna.zip"}
+    Если target_path — папка, имя формируется из имени проекта.
+
+    project_id в URL — это ИМЯ проекта (sensor1), а не sha1-id.
+    Резолвим имя → запись реестра → передаём реальный id в export_zip.
+    """
+    from . import projects as pj
+
+    entry = _find_project_any(project_id)
+    if entry is None:
+        return _error("PROJECT_NOT_FOUND",
+                      f"Project {project_id} not in registry", 404)
+
+    body = _body()
+    target = body.get("target_path") or body.get("target") or body.get("dir")
+    if not target:
+        return _error("MISSING_TARGET", "'target_path' is required")
+
+    try:
+        out = pj.export_zip(entry["id"], Path(target))
+    except ValidationError as e:
+        return _error(e.code, e.message, e.http_status, e.details)
+
+    return _ok({"path": str(out), "size_bytes": out.stat().st_size})
+
+
+@bp.route("/projects/<project_id>/export_download", methods=["GET"])
+def api_export_project_download(project_id: str):
+    """Экспорт проекта напрямую в браузер (скачивание .taptuna.zip).
+
+    Query: (опционально) filename=my.zip — переопределить имя файла.
+
+    Возвращает zip с Content-Disposition: attachment, браузер сохранит
+    в папку загрузок. В Electron эту ручку заменим на нативный save dialog.
+    """
+    import shutil
+    import tempfile
+
+    from flask import send_file
+    from . import projects as pj
+
+    entry = _find_project_any(project_id)
+    if entry is None:
+        return _error("PROJECT_NOT_FOUND",
+                      f"Project {project_id} not in registry", 404)
+
+    filename = (request.args.get("filename") or "").strip()
+    if not filename:
+        filename = f"{entry['name']}{pj.EXPORT_EXT}"
+
+    tmpdir = Path(tempfile.mkdtemp(prefix="taptuna_export_"))
+    try:
+        target = tmpdir / filename
+        try:
+            out = pj.export_zip(entry["id"], target)
+        except ValidationError as e:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+            return _error(e.code, e.message, e.http_status, e.details)
+
+        # send_file удалит tmpdir после отдачи ответа через call_on_close
+        resp = send_file(
+            str(out),
+            mimetype="application/zip",
+            as_attachment=True,
+            download_name=filename,
+        )
+        # Очищаем tmpdir после отправки. Flask вызывает это после
+        # завершения отдачи тела ответа.
+        @resp.call_on_close
+        def _cleanup():
+            shutil.rmtree(tmpdir, ignore_errors=True)
+        return resp
+    except Exception:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        raise
+
 
 @bp.route("/projects/<project_id>", methods=["GET"])
 def api_get_project(project_id: str):
-    p = _get_project(project_id)
+    entry = _find_project_any(project_id)
+    if entry is None:
+        return _error("PROJECT_NOT_FOUND",
+                      f"Project {project_id} not in registry", 404)
+    p = Path(entry["path"])
     manifest_path = p / "manifest.json"
     if not manifest_path.exists():
         return _error(
             "PROJECT_NOT_INITIALIZED",
-            f"Project {project_id} has no manifest.json — "
-            f"run POST /api/projects or `taptuna init`",
+            f"Project {project_id} has no manifest.json",
             409,
             details={"path": str(p)},
         )
@@ -173,51 +430,46 @@ def api_get_project(project_id: str):
         "manifest": load_manifest(p),
     })
 
+
+@bp.route("/projects/<project_id>", methods=["DELETE"])
+def api_forget_project(project_id: str):
+    """Убрать проект из реестра (файлы НЕ удаляются).
+
+    project_id — реестровый id или display-имя.
+    """
+    from . import projects as pj
+
+    entry = _find_project_any(project_id)
+    if entry is None:
+        return _error("PROJECT_NOT_FOUND",
+                      f"Project {project_id} not in registry", 404)
+
+    if not pj.forget_project(entry["id"]):
+        return _error("FORGET_FAILED",
+                      f"Could not forget project {project_id}", 500)
+
+    active = _active_project_dir()
+    if active is not None and Path(entry["path"]).resolve() == active.resolve():
+        current_app.config["PROJECT_DIR"] = None
+
+    return _ok({"forgotten": entry["name"]})
+
 @bp.route("/projects/<project_id>/mark_stale", methods=["POST"])
 def api_mark_stale(project_id: str):
-    """Помечает результаты устаревшими, если есть более новые версии
-    интерпретаций. Возвращает {marked: N}.
+    """Помечает результаты устаревшими, если интерпретация изменилась
+    по содержимому (source_hash). Возвращает {marked: N}.
+
+    Использует ту же логику, что verify-время: version без смены
+    содержимого stale не делает.
     """
+    from .verification import mark_stale
+
     p = _get_project(project_id)
     conn = open_db(p)
     try:
-        cur = conn.cursor()
-        # Находим results, чей run использовал устаревшую версию интерпретации
-        cur.execute("""
-            UPDATE verification_results
-            SET stale = 1
-            WHERE run_id IN (
-                SELECT vr.id
-                FROM verification_runs vr
-                JOIN interpretations i ON i.id = vr.interpretation_id
-                WHERE EXISTS (
-                    SELECT 1 FROM interpretations i2
-                    WHERE i2.name = i.name AND i2.version > i.version
-                )
-            )
-        """)
-        marked_results = cur.rowcount
-
-        # Помечаем stale и hypothesis_checks, чья гипотеза привязана
-        # к устаревшей версии интерпретации
-        cur.execute("""
-            UPDATE hypothesis_checks
-            SET stale = 1
-            WHERE hypothesis_id IN (
-                SELECT h.id FROM hypotheses h
-                JOIN interpretations i ON i.id = h.interpretation_id
-                WHERE EXISTS (
-                    SELECT 1 FROM interpretations i2
-                    WHERE i2.name = i.name AND i2.version > i.version
-                )
-            )
-        """)
-        marked_checks = cur.rowcount
-
+        marked = mark_stale(conn)
         conn.commit()
-        return _ok({"marked": marked_results + marked_checks,
-                    "results": marked_results,
-                    "hypothesis_checks": marked_checks})
+        return _ok({"marked": marked, "results": marked})
     finally:
         conn.close()
 
@@ -290,6 +542,51 @@ def api_integrity(project_id: str):
 
 # --- Ingest (job-based) ---
 
+def _resolve_ingest_target(project_dir: Path, pcap_name: str) -> tuple[Path, str, bool]:
+    """Решает, куда положить новый PCAP.
+
+    Логика:
+    - Если проект пуст (0 captures) — переименовываем его display-имя
+      по имени PCAP, ingest идёт в текущий проект.
+    - Если в проекте уже есть captures — создаём НОВЫЙ проект с именем
+      из PCAP, ingest идёт туда. Активный проект переключаем.
+
+    Args:
+        project_dir: путь активного проекта.
+        pcap_name: имя загружаемого PCAP (`sensor1.pcap`).
+
+    Returns:
+        (target_dir, display_name, changed)
+        - target_dir — куда писать ingest;
+        - display_name — отображаемое имя целевого проекта;
+        - changed — true, если проект переименован или создан новый
+                    (UI покажет уведомление).
+    """
+    from . import projects as pj
+
+    pcap_stem = Path(pcap_name).stem or "project"
+
+    # Сколько captures уже в проекте
+    conn = open_db(project_dir)
+    try:
+        n_captures = conn.execute("SELECT COUNT(*) FROM captures").fetchone()[0]
+    finally:
+        conn.close()
+
+    entry = pj.find_by_path(project_dir)
+    if entry is None:
+        # Проект не в реестре — зарегистрируем
+        entry = pj.open_project_path(project_dir)
+
+    if n_captures == 0:
+        new_entry = pj.rename_display(entry["id"], pcap_stem)
+        changed = new_entry["name"] != entry["name"]
+        return project_dir, new_entry["name"], changed
+    else:
+        new_info = pj.create_project(pcap_stem)
+        return Path(new_info["path"]), new_info["name"], True
+
+
 @bp.route("/projects/<project_id>/upload", methods=["POST"])
 def api_upload_capture(project_id: str):
     """Загрузка PCAP через multipart/form-data и запуск ingest через job.
@@ -330,6 +627,19 @@ def api_upload_capture(project_id: str):
 
     no_copy = request.form.get("no_copy", "false").lower() in ("1", "true", "yes")
 
+    # ← ДОБАВЛЕНО: решаем, куда импортировать
+    try:
+        target_dir, target_name, project_changed = _resolve_ingest_target(
+            p, f.filename
+        )
+    except ValidationError as e:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        return _error(e.code, e.message, e.http_status, e.details)
+
+    if target_dir != p:
+        # Создали новый проект — переключаем активный
+        current_app.config["PROJECT_DIR"] = target_dir
+
     mgr = get_job_manager()
 
     def worker(job):
@@ -340,7 +650,7 @@ def api_upload_capture(project_id: str):
 
         try:
             return ingest_capture(
-                project_dir=p,
+                project_dir=target_dir,
                 input_path=tmp_path,
                 no_copy=no_copy,
                 progress=_progress,
@@ -361,6 +671,8 @@ def api_upload_capture(project_id: str):
         "state": job.state.value,
         "filename": f.filename,
         "size": size,
+        "target_project": target_name,       # ← НОВОЕ
+        "project_changed": project_changed,  # ← НОВОЕ
     }, 202)
 
 @bp.route("/projects/<project_id>/captures", methods=["POST"])
@@ -371,6 +683,17 @@ def api_ingest_capture(project_id: str):
     if not input_path:
         return _error("MISSING_INPUT", "'input_path' is required")
     no_copy = bool(body.get("no_copy", False))
+
+    # ← ДОБАВЛЕНО: решаем, куда импортировать
+    try:
+        target_dir, target_name, project_changed = _resolve_ingest_target(
+            p, Path(input_path).name
+        )
+    except ValidationError as e:
+        return _error(e.code, e.message, e.http_status, e.details)
+
+    if target_dir != p:
+        current_app.config["PROJECT_DIR"] = target_dir
 
     mgr = get_job_manager()
 
@@ -384,7 +707,7 @@ def api_ingest_capture(project_id: str):
             return job.is_cancelled()
 
         result = ingest_capture(
-            project_dir=p,
+            project_dir=target_dir,
             input_path=Path(input_path),
             no_copy=no_copy,
             progress=_progress,
@@ -397,7 +720,12 @@ def api_ingest_capture(project_id: str):
         "input_path": input_path,
         "no_copy": no_copy,
     })
-    return _ok({"job_id": job.id, "state": job.state.value}, 202)
+    return _ok({
+        "job_id": job.id,
+        "state": job.state.value,
+        "target_project": target_name,
+        "project_changed": project_changed,
+    }, 202)
 
 
 @bp.route("/projects/<project_id>/captures", methods=["GET"])
@@ -1060,6 +1388,190 @@ def api_get_interpretation(interpretation_id: int):
     finally:
         conn.close()
 
+@bp.route("/interpretations/<int:interpretation_id>/export", methods=["GET"])
+def api_export_interpretation(interpretation_id: int):
+    """Скачать интерпретацию одним файлом (YAML).
+
+    Query: project_id=<name>
+    Ответ: text/yaml, Content-Disposition: attachment
+    """
+    project_id = request.args.get("project_id")
+    if not project_id:
+        return _error("MISSING_PROJECT", "'project_id' query param required")
+    p = _get_project(project_id)
+
+    conn = open_db(p)
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT name, version, kind, source_yaml FROM interpretations WHERE id = ?",
+            (interpretation_id,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return _error("NOT_FOUND", "interpretation not found", 404)
+        row = dict(row)
+    finally:
+        conn.close()
+
+    # Если source_yaml пустой (у script-интерпретаций так не бывает,
+    # но на всякий случай) — собираем YAML из блоков в БД.
+    text = row["source_yaml"] or ""
+    if not text.strip():
+        spec = {
+            "name": row["name"],
+            "version": row["version"],
+            "kind": row["kind"],
+            "framing": {},
+            "fields": {},
+            "constraints": [],
+            "semantics": {},
+        }
+        try:
+            import yaml as _yaml  # type: ignore
+            text = _yaml.safe_dump(spec, allow_unicode=True, sort_keys=False)
+        except ImportError:
+            text = json.dumps(spec, indent=2, ensure_ascii=False)
+
+    # Имя файла: sensor1_fixed-v2.yaml
+    safe_name = "".join(
+        c if c.isalnum() or c in "._-" else "_"
+        for c in row["name"]
+    ) or "interpretation"
+    filename = f"{safe_name}-v{row['version']}.yaml"
+
+    return Response(
+        text,
+        mimetype="text/yaml; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+        },
+    )
+
+
+@bp.route("/projects/<project_id>/interpretations/import", methods=["POST"])
+def api_import_interpretation(project_id: str):
+    """Импорт интерпретации из YAML.
+
+    Два режима (взаимоисключающие):
+    A. multipart/form-data с полем 'file' → берём содержимое файла.
+    B. application/json с полем 'source_path' → читаем файл с диска.
+
+    Query/form параметры:
+        name (опционально) — переопределить имя интерпретации
+                             (иначе берётся из YAML).
+
+    Ответ: {id, name, version, kind}
+    """
+    import hashlib
+    p = _get_project(project_id)
+
+    raw: Optional[str] = None
+    name_override: Optional[str] = None
+
+    if "file" in request.files:
+        f = request.files["file"]
+        if not f.filename:
+            return _error("EMPTY_FILE", "uploaded file has no name")
+        try:
+            raw = f.read().decode("utf-8")
+        except UnicodeDecodeError as e:
+            return _error("BAD_ENCODING",
+                          f"file is not utf-8: {e}", 400)
+        name_override = request.form.get("name")
+    else:
+        body = _body()
+        src = body.get("source_path")
+        if not src:
+            return _error(
+                "MISSING_SOURCE",
+                "provide either 'file' (multipart) or 'source_path' (json)",
+            )
+        src_path = Path(src)
+        if not src_path.is_file():
+            return _error("SOURCE_NOT_FOUND",
+                          f"file not found: {src_path}", 404)
+        try:
+            raw = src_path.read_text(encoding="utf-8")
+        except Exception as e:
+            return _error("READ_FAILED", f"{type(e).__name__}: {e}", 400)
+        name_override = body.get("name")
+
+    if raw is None or not raw.strip():
+        return _error("EMPTY_SOURCE", "source is empty")
+
+    # Парсим YAML/JSON в spec (то же, что делает api_add_interpretation)
+    spec: dict
+    stripped = raw.lstrip()
+    if stripped.startswith("{"):
+        try:
+            spec = json.loads(raw)
+        except Exception as e:
+            return _error("BAD_JSON", f"JSON parse error: {e}",
+                          details={"head": raw[:200]})
+    else:
+        try:
+            import yaml as _yaml  # type: ignore
+            spec = _yaml.safe_load(raw) or {}
+        except Exception as e:
+            return _error("BAD_YAML", f"YAML parse error: {e}",
+                          details={"head": raw[:200]})
+        if not isinstance(spec, dict):
+            return _error("BAD_SPEC",
+                          "top-level YAML must be a mapping", 400)
+
+    name = (name_override or spec.get("name") or "").strip()
+    kind = (spec.get("kind") or "declarative").strip()
+    if not name:
+        return _error("MISSING_NAME",
+                      "no 'name' in YAML and no 'name' override")
+    if kind not in ("declarative", "script"):
+        return _error("BAD_KIND",
+                      f"kind must be declarative or script, got {kind!r}")
+
+    framing_obj = spec.get("framing") or {}
+    fields_obj = spec.get("fields") or {}
+    constraints_obj = spec.get("constraints") or []
+    semantics_obj = spec.get("semantics") or {}
+
+    if kind == "declarative":
+        if not isinstance(framing_obj, dict) or "kind" not in framing_obj:
+            return _error(
+                "BAD_FRAMING",
+                "framing spec must be a dict with 'kind' field",
+                details={"framing": framing_obj},
+            )
+
+    source_hash = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+    conn = open_db(p)
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT MAX(version) FROM interpretations WHERE name = ?",
+            (name,),
+        )
+        version = (cur.fetchone()[0] or 0) + 1
+        cur.execute(
+            """INSERT INTO interpretations
+               (name, version, kind, source_yaml, source_hash,
+                framing_json, fields_json, constraints_json, semantics_json)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            (name, version, kind, raw, source_hash,
+             json.dumps(framing_obj, ensure_ascii=False),
+             json.dumps(fields_obj, ensure_ascii=False),
+             json.dumps(constraints_obj, ensure_ascii=False),
+             json.dumps(semantics_obj, ensure_ascii=False)),
+        )
+        conn.commit()
+        return _ok({
+            "id": cur.lastrowid,
+            "name": name,
+            "version": version,
+            "kind": kind,
+        }, 201)
+    finally:
+        conn.close()
 
 # --- Corpora ---
 
@@ -1126,6 +1638,147 @@ def api_create_corpus(project_id: str):
     finally:
         conn.close()
 
+@bp.route("/corpora/<int:corpus_id>/export", methods=["GET"])
+def api_export_corpus(corpus_id: int):
+    """Скачать корпус одним JSON-файлом.
+
+    Query: project_id=<name>
+    Ответ: application/json, Content-Disposition: attachment
+    """
+    project_id = request.args.get("project_id")
+    if not project_id:
+        return _error("MISSING_PROJECT", "'project_id' query param required")
+    p = _get_project(project_id)
+
+    conn = open_db(p)
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT name, criteria_json FROM corpora WHERE id = ?",
+            (corpus_id,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return _error("NOT_FOUND", "corpus not found", 404)
+        row = dict(row)
+    finally:
+        conn.close()
+
+    try:
+        criteria = json.loads(row["criteria_json"] or "{}")
+    except Exception:
+        criteria = {}
+
+    payload = {
+        "name": row["name"],
+        "criteria": criteria,
+    }
+
+    safe_name = "".join(
+        c if c.isalnum() or c in "._-" else "_"
+        for c in row["name"]
+    ) or "corpus"
+    filename = f"{safe_name}.corpus.json"
+
+    return Response(
+        json.dumps(payload, indent=2, ensure_ascii=False),
+        mimetype="application/json; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+        },
+    )
+
+
+@bp.route("/projects/<project_id>/corpora/import", methods=["POST"])
+def api_import_corpus(project_id: str):
+    """Импорт корпуса из JSON.
+
+    Два режима:
+    A. multipart/form-data с полем 'file'.
+    B. application/json с полем 'source_path'.
+
+    Параметры:
+        name (опционально) — переопределить имя.
+
+    Ответ: {id, name}
+    """
+    p = _get_project(project_id)
+
+    raw: Optional[str] = None
+    name_override: Optional[str] = None
+
+    if "file" in request.files:
+        f = request.files["file"]
+        if not f.filename:
+            return _error("EMPTY_FILE", "uploaded file has no name")
+        try:
+            raw = f.read().decode("utf-8")
+        except UnicodeDecodeError as e:
+            return _error("BAD_ENCODING",
+                          f"file is not utf-8: {e}", 400)
+        name_override = request.form.get("name")
+    else:
+        body = _body()
+        src = body.get("source_path")
+        if not src:
+            return _error(
+                "MISSING_SOURCE",
+                "provide either 'file' (multipart) or 'source_path' (json)",
+            )
+        src_path = Path(src)
+        if not src_path.is_file():
+            return _error("SOURCE_NOT_FOUND",
+                          f"file not found: {src_path}", 404)
+        try:
+            raw = src_path.read_text(encoding="utf-8")
+        except Exception as e:
+            return _error("READ_FAILED", f"{type(e).__name__}: {e}", 400)
+        name_override = body.get("name")
+
+    if raw is None or not raw.strip():
+        return _error("EMPTY_SOURCE", "source is empty")
+
+    try:
+        spec = json.loads(raw)
+    except Exception as e:
+        return _error("BAD_JSON", f"JSON parse error: {e}",
+                      details={"head": raw[:200]})
+
+    if not isinstance(spec, dict):
+        return _error("BAD_SPEC", "top-level JSON must be an object")
+
+    name = (name_override or spec.get("name") or "").strip()
+    criteria = spec.get("criteria") or {}
+    if not name:
+        return _error("MISSING_NAME",
+                      "no 'name' in JSON and no 'name' override")
+    if not isinstance(criteria, dict):
+        return _error("BAD_CRITERIA", "criteria must be an object")
+
+    conn = open_db(p)
+    try:
+        cur = conn.cursor()
+        # Уникализация имени: sensor1_all → sensor1_all_2, ...
+        cur.execute("SELECT id FROM corpora WHERE name = ?", (name,))
+        if cur.fetchone() is not None:
+            i = 2
+            while True:
+                candidate = f"{name}_{i}"
+                cur.execute("SELECT id FROM corpora WHERE name = ?",
+                            (candidate,))
+                if cur.fetchone() is None:
+                    name = candidate
+                    break
+                i += 1
+
+        cur.execute(
+            "INSERT INTO corpora (name, criteria_json) VALUES (?,?)",
+            (name, json.dumps(criteria, ensure_ascii=False)),
+        )
+        conn.commit()
+        return _ok({"id": cur.lastrowid, "name": name}, 201)
+    finally:
+        conn.close()
 
 @bp.route("/projects/<project_id>/corpora/<int:corpus_id>/preview", methods=["POST"])
 def api_preview_corpus(project_id: str, corpus_id: int):
@@ -1482,18 +2135,25 @@ def api_check_hypothesis(project_id: str, hyp_id: int):
 
 @bp.route("/projects/<project_id>/hypotheses/<int:hyp_id>/checks", methods=["GET"])
 def api_get_hypothesis_checks(project_id: str, hyp_id: int):
-    """Результаты проверки гипотезы + связанные наблюдения."""
-    from .hypotheses import get_hypothesis_checks, get_hypothesis_observations
+    from .hypotheses import (
+        get_hypothesis_checks, get_hypothesis_checks_history,
+        get_hypothesis_observations,
+    )
 
     p = _get_project(project_id)
     result = request.args.get("result")
+    only_current = request.args.get("history", "0") not in ("1", "true", "yes")
     limit = int(request.args.get("limit", 200))
     offset = int(request.args.get("offset", 0))
+
     conn = open_db(p)
     try:
-        checks = get_hypothesis_checks(
-            conn, hyp_id, result=result, limit=limit, offset=offset
-        )
+        if only_current:
+            checks = get_hypothesis_checks(
+                conn, hyp_id, result=result, limit=limit, offset=offset)
+        else:
+            checks = get_hypothesis_checks_history(
+                conn, hyp_id, limit=limit, offset=offset)
         observations = get_hypothesis_observations(conn, hyp_id)
         return _ok({"checks": checks, "observations": observations})
     finally:

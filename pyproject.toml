@@ -37,4 +37,17 @@ python-source = "python"
 module-name = "taptuna._native"
 manifest-path = "Cargo.toml"
 bindings = "pyo3"
-strip = true
+include = [
+    { path = "python/taptuna/examples/__init__.py", format = ["sdist", "wheel"] },
+    { path = "python/taptuna/examples/generate.py", format = ["sdist", "wheel"] },
+    { path = "python/taptuna/examples/interp.yaml", format = ["sdist", "wheel"] },
+    { path = "python/taptuna/examples/corpus.yaml", format = ["sdist", "wheel"] },
+    { path = "python/taptuna/examples/run.sh", format = ["sdist", "wheel"] },
+    { path = "python/taptuna/examples/expected/test.json", format = ["sdist", "wheel"] },
+]
+exclude = [
+    "**/__pycache__/**",
+    "**/*.pyc",
+    "**/*.pyo",
+    "**/*.pyd",
+]

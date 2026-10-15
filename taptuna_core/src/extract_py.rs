@@ -44,6 +44,14 @@ fn parse_offset(v: &Bound<'_, PyAny>) -> PyResult<OffsetSpec> {
     if let Ok(i) = v.extract::<u64>() {
         return Ok(OffsetSpec::Fixed(i));
     }
+    if let Ok(s) = v.extract::<String>() {
+        return match s.as_str() {
+            "auto" => Ok(OffsetSpec::Auto),
+            other => Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "unknown offset string: {} (use \"auto\" or {{\"kind\": ...}})", other
+            ))),
+        };
+    }
     let d: &Bound<'_, PyDict> = v.downcast()?;
     if let Some(kind) = d.get_item("kind")? {
         let kind: String = kind.extract()?;

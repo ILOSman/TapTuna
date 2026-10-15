@@ -133,6 +133,9 @@ table tr:hover td { background: #fbfbfd; }
   display: flex; flex-direction: column;
   z-index: 200;
 }
+/* ← ДОБАВЛЕНО: display: flex выше перебивает браузерный [hidden],
+   поэтому панель показывалась при пустом списке задач. */
+#jobs-panel[hidden] { display: none !important; }
 #jobs-panel header {
   display: flex; justify-content: space-between; align-items: center;
   padding: 0.5rem 0.8rem; border-bottom: 1px solid var(--line);

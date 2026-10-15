@@ -349,7 +349,12 @@ mod tests {
         // temp_raw = 0x0123 = 291 → temp = 29
         let msg = b"\x01\x23";
         let out = extract(&spec, msg).unwrap();
-        assert_eq!(out.get("temp_raw"), Some(&Value::UInt(0x0123)));
-        assert_eq!(out.get("temp"), Some(&Value::UInt(29)));
+
+        // temp_raw — U16Be, поэтому UInt.
+        assert_eq!(out.get("temp"), Some(&Value::Int(29)));   // было UInt(29)
+
+        // ← ИЗМЕНЕНО: const 10 приходит как Int(10),
+        // правило "Int заражает" даёт Int(29).
+        assert_eq!(out.get("temp"), Some(&Value::Int(29)));
     }
 }

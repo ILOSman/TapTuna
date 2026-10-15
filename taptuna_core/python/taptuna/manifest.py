@@ -42,7 +42,7 @@ SCHEMA_VERSION = 1
 DEFAULT_POLICIES = {
     "checksum": "verify",
     "overlap": "first_wins",
-    "max_output_bytes": 10_485_760,   # 10 MiB
+    "max_output_bytes": 2 * 1024 * 1024 * 1024,   # 2 GiB
     "blob_inline_threshold": 4096,    # 4 KiB
 }
 

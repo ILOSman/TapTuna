@@ -3,20 +3,24 @@
 Гипотеза = safe-eval выражение над полями сообщения. Результаты:
 - satisfied    — выражение истинно
 - violated     — выражение ложно
-- not_applicable — сообщение не относится к интерпретации
-- error        — ошибка вычисления (например, поле не найдено)
+- not_applicable — сообщение не относится к интерпретации,
+                   либо поле не извлекалось (FieldNotFound)
+- error        — ошибка вычисления (переполнение, деление на ноль)
 
 Автоматический статус:
 - supported    — есть satisfied, нет violated
 - refuted      — есть violated
 - inconclusive — нет ни satisfied, ни violated (все not_applicable/error)
 - unknown      — гипотеза ещё не проверялась
+
+История проверок сохраняется. При повторном прогоне старые записи
+помечаются stale=1, новые — stale=0. Это позволяет сравнить результаты
+до и после изменения интерпретации (ТЗ §7.1 R4).
 """
 from __future__ import annotations
 
 import ast
 import json
-import time
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -39,16 +43,17 @@ def parse_expression(text: str) -> dict:
     """Парсит выражение на Python-подобном синтаксисе в safe_eval AST.
 
     Поддерживаемые конструкции:
-        - числа: 42, -10, 3.14 (float превращаем в int * 100 — плохо,
-          поэтому пока только целые)
-        - шестнадцатеричные: 0x48
+        - целые числа: 42, -10, 0x48
         - строки: "WRONG", 'abc'
+        - байты: b"\\x00\\x01"
         - имена полей: temp, magic, payload
         - бинарные: + - * / // % & | ^ << >>
         - сравнения: == != < <= > >=
         - логические: and or not
-        - len(x) — длина bytes/str
-        - встроенные предикаты: exists(x) — поле определено
+        - тернарный: a if cond else b
+        - len(x)       — длина bytes/str
+        - exists(x)    — поле определено в сообщении
+        - contains(a,b)— подстрока/подпоследовательность
     """
     try:
         tree = ast.parse(text.strip(), mode="eval")
@@ -60,13 +65,21 @@ def parse_expression(text: str) -> dict:
         )
     return _convert(tree.body)
 
-def extract_field_names(ast: dict) -> set[str]:
-    """Возвращает имена полей, на которые ссылается выражение."""
+
+def extract_field_names(expr: dict) -> set[str]:
+    """Возвращает имена полей, на которые ссылается выражение.
+
+    Учитывает как `{"op":"field"}`, так и `{"op":"exists"}` — оба
+    ссылаются на поле по имени. Используется в POST /hypotheses
+    для проверки, что выражение ссылается только на поля, извлекаемые
+    выбранной интерпретацией.
+    """
     out: set[str] = set()
 
-    def walk(node):
+    def walk(node: Any) -> None:
         if isinstance(node, dict):
-            if node.get("op") == "field" and "name" in node:
+            op = node.get("op")
+            if op in ("field", "exists") and isinstance(node.get("name"), str):
                 out.add(node["name"])
             for v in node.values():
                 walk(v)
@@ -74,8 +87,9 @@ def extract_field_names(ast: dict) -> set[str]:
             for v in node:
                 walk(v)
 
-    walk(ast)
+    walk(expr)
     return out
+
 
 def _convert(node: ast.AST) -> dict:
     """Рекурсивно конвертирует ast.Node в safe_eval JSON AST."""
@@ -85,15 +99,14 @@ def _convert(node: ast.AST) -> dict:
         if isinstance(v, bool):
             return {"op": "const", "value": v}
         if isinstance(v, int):
-            # Диапазон умещается в i64/u64 — ок
             return {"op": "const", "value": v}
         if isinstance(v, str):
             return {"op": "const", "value": v}
         if isinstance(v, bytes):
             return {"op": "const", "value": list(v)}
+        if v is None:
+            return {"op": "const", "value": None}
         if isinstance(v, float):
-            # Простейший вариант: превратить в int * 100? Нет, ошибка.
-            # Пока не поддерживаем float.
             raise ValidationError(
                 code="BAD_EXPRESSION",
                 message="Floats not supported, use integers",
@@ -109,9 +122,8 @@ def _convert(node: ast.AST) -> dict:
         return {"op": "field", "name": node.id}
 
     if isinstance(node, ast.BinOp):
-        op = _binop_name(node.op)
         return {
-            "op": op,
+            "op": _binop_name(node.op),
             "a": _convert(node.left),
             "b": _convert(node.right),
         }
@@ -119,7 +131,8 @@ def _convert(node: ast.AST) -> dict:
     if isinstance(node, ast.UnaryOp):
         if isinstance(node.op, ast.USub):
             # Свёртка отрицательной константы: -20 → const(-20)
-            if isinstance(node.operand, ast.Constant) and isinstance(node.operand.value, int):
+            if isinstance(node.operand, ast.Constant) and \
+                    isinstance(node.operand.value, int):
                 return {"op": "const", "value": -node.operand.value}
             return {"op": "neg", "a": _convert(node.operand)}
         if isinstance(node.op, ast.Not):
@@ -138,7 +151,6 @@ def _convert(node: ast.AST) -> dict:
 
     if isinstance(node, ast.BoolOp):
         op = "and" if isinstance(node.op, ast.And) else "or"
-        # Раскрываем цепочку a and b and c → and(a, and(b, c))
         values = [_convert(v) for v in node.values]
         result = values[-1]
         for v in reversed(values[:-1]):
@@ -146,9 +158,8 @@ def _convert(node: ast.AST) -> dict:
         return result
 
     if isinstance(node, ast.Compare):
-        # a < b < c → and(lt(a, b), lt(b, c))
         if len(node.ops) != 1:
-            # Цепочки: разворачиваем в последовательность
+            # a < b < c → and(lt(a,b), lt(b,c))
             parts = []
             left = _convert(node.left)
             for op, right_node in zip(node.ops, node.comparators):
@@ -174,6 +185,7 @@ def _convert(node: ast.AST) -> dict:
             )
         name = node.func.id
         args = [_convert(a) for a in node.args]
+
         if name == "len":
             if len(args) != 1:
                 raise ValidationError(
@@ -182,6 +194,7 @@ def _convert(node: ast.AST) -> dict:
                     details={},
                 )
             return {"op": "len", "a": args[0]}
+
         if name == "exists":
             if len(args) != 1 or args[0].get("op") != "field":
                 raise ValidationError(
@@ -189,9 +202,20 @@ def _convert(node: ast.AST) -> dict:
                     message="exists(field_name) — expects a single field name",
                     details={},
                 )
-            # exists → expr, который true если поле определено.
-            # Реализуем через сравнение field != null
-            return {"op": "ne", "a": args[0], "b": {"op": "const", "value": None}}
+            # exists(a) → {"op":"exists","name":"a"}
+            # Rust-сторона обрабатывает это через ctx.fields.contains_key(name)
+            # и НЕ бросает FieldNotFound (в отличие от Expr::Field).
+            return {"op": "exists", "name": args[0]["name"]}
+
+        if name == "contains":
+            if len(args) != 2:
+                raise ValidationError(
+                    code="BAD_EXPRESSION",
+                    message="contains(a, b) takes exactly 2 arguments",
+                    details={},
+                )
+            return {"op": "contains", "a": args[0], "b": args[1]}
+
         raise ValidationError(
             code="BAD_EXPRESSION",
             message=f"Unknown function: {name}",
@@ -199,8 +223,7 @@ def _convert(node: ast.AST) -> dict:
         )
 
     if isinstance(node, ast.IfExp):
-        # a if cond else b — раскрываем через or/and
-        # x if c else y  →  or(and(c, x), and(not(c), y))
+        # x if c else y → or(and(c, x), and(not(c), y))
         cond = _convert(node.test)
         a = _convert(node.body)
         b = _convert(node.orelse)
@@ -238,6 +261,83 @@ def _cmpop_name(op: ast.cmpop) -> str:
 # Проверка гипотезы на корпусе
 # ---------------------------------------------------------------------------
 
+#: Признак "поле не найдено" в тексте исключения из native.safe_eval.
+#: Rust-сторона формирует EvalError::FieldNotFound("name") → "field not found: name".
+_FIELD_NOT_FOUND_MARKER = "field not found"
+
+
+def _classify_eval_error(exc: BaseException) -> tuple[str, str]:
+    """Различает FieldNotFound (not_applicable) и прочие ошибки (error).
+
+    Возвращает (result, notes).
+    """
+    msg = str(exc)
+    if _FIELD_NOT_FOUND_MARKER in msg.lower():
+        return "not_applicable", f"field missing in this message: {msg}"
+    return "error", f"{type(exc).__name__}: {msg}"
+
+
+def _resolve_run(
+    cur,
+    interpretation_id: Optional[int],
+    run_id: Optional[int],
+) -> int:
+    """Возвращает run_id: явный, либо последний завершённый для интерпретации.
+
+    Проверяет, что у явного run_id interpretation_id совпадает — иначе
+    fields_json в результатах относятся к другой интерпретации, и
+    выражение бессмысленно.
+    """
+    if run_id is not None:
+        cur.execute(
+            "SELECT interpretation_id FROM verification_runs WHERE id = ?",
+            (run_id,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            raise ValidationError(
+                code="RUN_NOT_FOUND",
+                message=f"Verification run {run_id} not found",
+                details={"run_id": run_id},
+            )
+        if interpretation_id is not None and row["interpretation_id"] != interpretation_id:
+            raise ValidationError(
+                code="RUN_INTERPRETATION_MISMATCH",
+                message=(
+                    f"Run {run_id} uses interpretation "
+                    f"{row['interpretation_id']}, "
+                    f"but hypothesis references {interpretation_id}"
+                ),
+                details={
+                    "run_id": run_id,
+                    "run_interpretation_id": row["interpretation_id"],
+                    "hypothesis_interpretation_id": interpretation_id,
+                },
+            )
+        return int(run_id)
+
+    if interpretation_id is None:
+        raise ValidationError(
+            code="NO_INTERPRETATION",
+            message="Hypothesis has no interpretation_id; specify run_id",
+            details={},
+        )
+    cur.execute(
+        """SELECT id FROM verification_runs
+           WHERE interpretation_id = ? AND status = 'completed'
+           ORDER BY id DESC LIMIT 1""",
+        (interpretation_id,),
+    )
+    rrow = cur.fetchone()
+    if rrow is None:
+        raise ValidationError(
+            code="NO_RUN",
+            message="No completed run found for this interpretation",
+            details={"interpretation_id": interpretation_id},
+        )
+    return int(rrow["id"])
+
+
 def check_hypothesis(
     project_dir: Path,
     hypothesis_id: int,
@@ -247,18 +347,16 @@ def check_hypothesis(
 ) -> dict:
     """Прогоняет гипотезу по результатам verify.
 
-    Берём последний завершённый прогон для интерпретации гипотезы
-    (или явно указанный run_id), читаем fields_json из verification_results
-    и вычисляем выражение.
-
-    Возвращает summary: {satisfied, violated, not_applicable, error, status}.
+    История сохраняется: прошлые проверки этой гипотезы помечаются
+    stale=1, новые вставляются с stale=0. Это позволяет сравнить
+    результат до/после изменения интерпретации (ТЗ §7.1 R4).
     """
     project_dir = Path(project_dir)
     conn = open_db(project_dir)
     try:
         cur = conn.cursor()
 
-        # 1. Загружаем гипотезу
+        # 1. Гипотеза
         cur.execute("SELECT * FROM hypotheses WHERE id = ?", (hypothesis_id,))
         hrow = cur.fetchone()
         if hrow is None:
@@ -275,34 +373,13 @@ def check_hypothesis(
                 message="Hypothesis has no expression to check",
                 details={"id": hypothesis_id},
             )
-
         expr = json.loads(hyp["expression_json"])
         interpretation_id = hyp.get("interpretation_id")
 
-        # 2. Находим run
-        if run_id is None:
-            if interpretation_id is None:
-                raise ValidationError(
-                    code="NO_INTERPRETATION",
-                    message="Hypothesis has no interpretation_id; specify run_id",
-                    details={},
-                )
-            cur.execute(
-                """SELECT id FROM verification_runs
-                   WHERE interpretation_id = ? AND status = 'completed'
-                   ORDER BY id DESC LIMIT 1""",
-                (interpretation_id,),
-            )
-            rrow = cur.fetchone()
-            if rrow is None:
-                raise ValidationError(
-                    code="NO_RUN",
-                    message="No completed run found for this interpretation",
-                    details={"interpretation_id": interpretation_id},
-                )
-            run_id = rrow["id"]
+        # 2. Прогон
+        run_id = _resolve_run(cur, interpretation_id, run_id)
 
-        # 3. Загружаем все результаты с fields_json
+        # 3. Результаты прогона
         cur.execute(
             """SELECT id, session_id, direction_id, message_index,
                       stream_offset, length, fields_json, status AS verify_status
@@ -313,17 +390,13 @@ def check_hypothesis(
         )
         rows = [dict(r) for r in cur.fetchall()]
 
-        # 4. Чистим старые проверки этой гипотезы
+        # 4. Помечаем прошлые проверки stale, НЕ удаляем (история).
         cur.execute(
-            "DELETE FROM hypothesis_checks WHERE hypothesis_id = ?",
+            "UPDATE hypothesis_checks SET stale = 1 WHERE hypothesis_id = ?",
             (hypothesis_id,),
         )
 
-        # 5. Проверяем каждое сообщение
-        stats = {"satisfied": 0, "violated": 0,
-                 "not_applicable": 0, "error": 0}
-
-        # safe_eval через native
+        # 5. Нужен native для safe_eval
         from . import native as _nat
         if not _nat.HAS_NATIVE or _nat._native is None:
             raise ValidationError(
@@ -333,35 +406,36 @@ def check_hypothesis(
             )
         native = _nat._native
 
+        stats = {"satisfied": 0, "violated": 0,
+                 "not_applicable": 0, "error": 0}
+
         total = len(rows) or 1
         for i, row in enumerate(rows):
             if cancel_check and cancel_check():
+                conn.rollback()
                 raise ValidationError(
                     code="CANCELLED",
                     message="hypothesis check cancelled",
-                    details={},
+                    details={"hypothesis_id": hypothesis_id},
                 )
 
+            fields: dict[str, Any] = {}
+            notes = ""
+
             if row["verify_status"] != "ok":
-                # Сообщение не разобрано интерпретацией — not_applicable
+                # Сообщение не разобрано интерпретацией — гипотеза
+                # к нему не применима.
                 result = "not_applicable"
                 notes = f"verify status: {row['verify_status']}"
-                fields = {}
             else:
                 try:
                     fields = json.loads(row["fields_json"] or "{}")
-                    # native.safe_eval.eval_expr ожидает (expr, fields)
                     val = native.safe_eval.eval_expr(expr, fields)
-                    if isinstance(val, bool):
-                        result = "satisfied" if val else "violated"
-                    else:
-                        # Не bool: трактуем по truthiness
-                        result = "satisfied" if val else "violated"
-                    notes = ""
+                    result = "satisfied" if bool(val) else "violated"
                 except Exception as e:
-                    result = "error"
-                    notes = f"{type(e).__name__}: {e}"
-                    fields = {}
+                    result, notes = _classify_eval_error(e)
+                    if result == "error":
+                        fields = {}
 
             stats[result] += 1
 
@@ -369,8 +443,8 @@ def check_hypothesis(
                 """INSERT INTO hypothesis_checks
                    (hypothesis_id, session_id, direction_id,
                     message_index, stream_offset, length,
-                    result, fields_json, notes)
-                   VALUES (?,?,?,?,?,?,?,?,?)""",
+                    result, fields_json, notes, stale)
+                   VALUES (?,?,?,?,?,?,?,?,?, 0)""",
                 (hypothesis_id,
                  row["session_id"], row["direction_id"],
                  row["message_index"], row["stream_offset"], row["length"],
@@ -409,21 +483,7 @@ def check_hypothesis(
              hypothesis_id),
         )
         conn.commit()
-        # Помечаем stale старые проверки, если интерпретация гипотезы
-        # получила новую версию
-        if interpretation_id is not None:
-            cur.execute(
-                """UPDATE hypothesis_checks
-                   SET stale = 1
-                   WHERE hypothesis_id = ?
-                     AND id NOT IN (
-                         SELECT hc.id FROM hypothesis_checks hc
-                         WHERE hc.hypothesis_id = ?
-                         ORDER BY hc.id DESC LIMIT ?
-                     )""",
-                (hypothesis_id, hypothesis_id, sum(stats.values())),
-            )
-            conn.commit()
+
         return {
             "hypothesis_id": hypothesis_id,
             "run_id": run_id,
@@ -448,10 +508,17 @@ def get_hypothesis_checks(
     result: Optional[str] = None,
     limit: int = 200,
     offset: int = 0,
+    only_current: bool = True,
 ) -> list[dict]:
-    """Возвращает результаты проверки гипотезы (с фильтром по result)."""
+    """Возвращает результаты проверки гипотезы.
+
+    only_current=True (default) — только последний прогон (stale=0).
+    only_current=False — вся история, включая stale.
+    """
     sql = "SELECT * FROM hypothesis_checks WHERE hypothesis_id = ?"
     params: list = [hypothesis_id]
+    if only_current:
+        sql += " AND stale = 0"
     if result:
         sql += " AND result = ?"
         params.append(result)
@@ -460,6 +527,25 @@ def get_hypothesis_checks(
     cur = conn.cursor()
     cur.execute(sql, params)
     return [dict(r) for r in cur.fetchall()]
+
+
+def get_hypothesis_checks_history(
+    conn,
+    hypothesis_id: int,
+    limit: int = 500,
+    offset: int = 0,
+) -> list[dict]:
+    """Вся история проверок гипотезы, включая stale.
+    Удобно для отчёта §9: «прогон 1 дал refuted, прогон 2 — supported»."""
+    cur = conn.cursor()
+    cur.execute(
+        """SELECT * FROM hypothesis_checks
+           WHERE hypothesis_id = ?
+           ORDER BY id DESC LIMIT ? OFFSET ?""",
+        (hypothesis_id, limit, offset),
+    )
+    return [dict(r) for r in cur.fetchall()]
+
 
 def get_hypothesis_observations(conn, hypothesis_id: int) -> list[dict]:
     """Возвращает наблюдения, связанные с гипотезой."""

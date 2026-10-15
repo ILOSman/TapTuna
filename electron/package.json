@@ -1,0 +1,57 @@
+{
+  "name": "taptuna",
+  "version": "0.1.0",
+  "description": "TapTuna — Protocol Laboratory",
+  "main": "main.js",
+  "author": "Madrigal",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "start:dev": "TAPTUNA_DEV=1 electron .",
+    "build:appimage": "electron-builder --linux AppImage",
+    "build:deb": "electron-builder --linux deb"
+  },
+  "devDependencies": {
+    "electron": "^32.0.0",
+    "electron-builder": "^25.0.0"
+  },
+  "build": {
+    "appId": "ru.madrigal.taptuna",
+    "productName": "TapTuna",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer/**/*",
+      "bin/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "bin/taptuna-server",
+        "to": "taptuna-server",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Development",
+      "icon": "build/icon.png",
+      "desktop": {
+        "Name": "TapTuna",
+        "Comment": "Protocol Laboratory",
+        "Categories": "Development;Network;"
+      }
+    }
+  },
+  "allowScripts": {
+    "electron@32.3.3": true
+  }
+}

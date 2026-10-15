@@ -1,0 +1,111 @@
+{% extends "base.html" %}
+{% block title %}Настройка tshark{% endblock %}
+{% block content %}
+
+<h1>Требуется tshark</h1>
+
+<section class="card">
+  <p>
+    Для импорта и анализа <code>.pcap</code> / <code>.pcapng</code>
+    TapTuna использует <strong>tshark</strong> из состава Wireshark.
+    Без него нельзя импортировать трафик.
+  </p>
+
+  {% if tshark_missing %}
+  <p style="color:#b7791f">
+    <strong>Сейчас tshark не найден в PATH.</strong>
+  </p>
+  {% else %}
+  <p style="color:#2f855a">
+    <strong>tshark найден.</strong> Можно продолжать.
+  </p>
+  {% endif %}
+
+  <h2 style="margin-top:1rem">Как установить</h2>
+  <table>
+    <thead><tr><th>Дистрибутив</th><th>Команда</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>Ubuntu / Debian / Mint</td>
+        <td><code>sudo apt install tshark</code></td>
+      </tr>
+      <tr>
+        <td>Fedora / RHEL</td>
+        <td><code>sudo dnf install wireshark-cli</code></td>
+      </tr>
+      <tr>
+        <td>Arch / Manjaro</td>
+        <td><code>sudo pacman -S wireshark-cli</code></td>
+      </tr>
+      <tr>
+        <td>openSUSE</td>
+        <td><code>sudo zypper install wireshark</code></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <p class="muted small" style="margin-top:0.6rem">
+    При установке Ubuntu спросит про разрешение захвата — можно
+    ответить <strong>No</strong>, для анализа файлов это не нужно.
+  </p>
+
+  <h2 style="margin-top:1rem">После установки</h2>
+  <p class="muted">
+    Закройте и откройте TapTuna заново — при старте tshark
+    подхватится автоматически. Либо нажмите кнопку ниже.
+  </p>
+
+  <div class="row" style="margin-top:0.6rem">
+    <button id="recheck-btn" class="primary">Проверить снова</button>
+    <span class="spacer"></span>
+    <a class="btn" id="continue-btn"
+       style="display:none" href="/">Продолжить →</a>
+  </div>
+
+  <div id="recheck-result" class="small" style="margin-top:0.6rem">—</div>
+</section>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  "use strict";
+  const btn = document.getElementById("recheck-btn");
+  const result = document.getElementById("recheck-result");
+  const cont = document.getElementById("continue-btn");
+
+  async function check() {
+    result.textContent = "проверка...";
+    result.style.color = "";
+    try {
+      const d = await window.taptuna.api("GET", "/api/system/tshark");
+      if (d.ok) {
+        result.innerHTML =
+          '<span style="color:#2f855a">✓ tshark найден: ' +
+          window.taptuna.escapeHtml(d.version || d.path) + '</span>';
+        cont.style.display = "";
+        btn.disabled = true;
+      } else {
+        result.innerHTML =
+          '<span style="color:#b7791f">✗ всё ещё не найден.</span>' +
+          (d.hint
+            ? '<pre class="mono small" style="margin-top:0.4rem; ' +
+              'background:#fbfbfd; padding:0.5rem">' +
+              window.taptuna.escapeHtml(d.hint) + '</pre>'
+            : "");
+      }
+    } catch (e) {
+      result.innerHTML =
+        '<span style="color:#c53030">Ошибка: ' +
+        window.taptuna.escapeHtml(e.message) + '</span>';
+    }
+  }
+
+  btn.addEventListener("click", check);
+
+  // Проверка при загрузке — если tshark уже есть, показать сразу
+  check();
+})();
+</script>
+{% endblock %}

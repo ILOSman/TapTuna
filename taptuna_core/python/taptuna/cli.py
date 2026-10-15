@@ -64,8 +64,8 @@ def _progress_printer(prefix: str = "") -> Any:
 # ---------------------------------------------------------------------------
 
 def cmd_init(args: argparse.Namespace) -> int:
-    from .manifest import create_manifest
-    from .store import init_db
+    from .manifest import create_manifest, sync_user_version
+    from .store import init_db, open_db, get_user_version
     from .errors import ProjectAlreadyExistsError
 
     project = Path(args.project).resolve()
@@ -76,8 +76,20 @@ def cmd_init(args: argparse.Namespace) -> int:
         print(f"project already initialized: {project}")
     else:
         print(f"manifest created: {project / 'manifest.json'}")
+
     init_db(project)
     print(f"database ready:   {project / 'project.sqlite'}")
+
+    # ← ДОБАВЛЕНО: синхронизируем user_version в манифесте с PRAGMA БД.
+    # Раньше create_manifest писал user_version=1, а migrate доводил БД
+    # до текущей версии — в манифесте оставалась цифра 1 навсегда.
+    conn = open_db(project)
+    try:
+        uv = get_user_version(conn)
+    finally:
+        conn.close()
+    sync_user_version(project, uv)
+    print(f"user_version:     {uv}")
     return 0
 
 
@@ -121,12 +133,18 @@ def cmd_ingest(args: argparse.Namespace) -> int:
 def cmd_serve(args: argparse.Namespace) -> int:
     from .app import create_app
 
-    project = Path(args.project).resolve()
-    if not (project / "manifest.json").exists():
-        return _fail(f"project not initialized: {project} (run `taptuna init`)")
+    project: Path | None = None
+    if args.project:
+        project = Path(args.project).resolve()
+        if not (project / "manifest.json").exists():
+            return _fail(
+                f"project not initialized: {project} "
+                f"(run `taptuna init` or omit --project to use the GUI)"
+            )
 
     app = create_app(project)
-    print(f"taptuna server on http://{args.host}:{args.port} (project: {project})")
+    where = str(project) if project else "(no project — GUI mode)"
+    print(f"taptuna server on http://{args.host}:{args.port} ({where})")
     app.run(host=args.host, port=args.port, debug=False)
     return 0
 
@@ -562,7 +580,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     # serve
     p = sub.add_parser("serve", help="запустить веб-сервер")
-    _project_arg(p)
+    # ← ИЗМЕНЕНО: --project стал необязательным.
+    # Без него — GUI-режим: /welcome и /api/projects/*.
+    p.add_argument("--project", type=Path, default=None,
+                   help="путь к каталогу проекта (необязательно)")
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=5000)
     p.set_defaults(func=cmd_serve)

@@ -290,10 +290,12 @@ semantics: {}
   // ============================================================
   const fieldsList = document.getElementById("f-fields-list");
   const FIELD_TYPES = [
-    "u8", "i8",
-    "u16be", "u16le", "u24be", "u24le",
-    "u32be", "u32le", "u64be", "u64le",
-    "bytes", "utf8", "ascii", "bcd",
+      "u8", "i8",
+      "u16be", "u16le", "i16be", "i16le",
+      "u24be", "u24le",
+      "u32be", "u32le", "i32be", "i32le",
+      "u64be", "u64le", "i64be", "i64le",
+      "bytes", "utf8", "ascii", "bcd",
   ];
 
   function addFieldRow(preset) {

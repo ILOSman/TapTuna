@@ -28,7 +28,7 @@
     <select id="dir-select">
       {% for d in directions %}
       <option value="{{ d.id }}" data-dir="{{ d.direction }}"
-              data-gaps='{{ d.gaps_json|safe }}'
+              data-gaps='{{ d.gaps_json|e }}'
               data-ambiguities='{{ d.ambiguities_json|safe }}'
               data-size="{{ d.reassembled_bytes }}">
         {{ d.direction }} ({{ d.reassembled_bytes }} байт,

@@ -144,8 +144,22 @@
     });
     es.addEventListener("done", () => {
       es.close();
-      window.taptuna.toast("Ingest завершён", "ok");
-      setTimeout(() => window.location.reload(), 800);
+
+      // ← ДОБАВЛЕНО: уведомление о переименовании/новом проекте
+      const changed = data.project_changed;
+      const target = data.target_project;
+      if (changed && target) {
+        window.taptuna.toast(
+          "Проект: " + target + ". Перезагрузка…",
+          "ok"
+        );
+      } else {
+        window.taptuna.toast("Ingest завершён", "ok");
+      }
+
+      // Если проект сменился — вернёмся на главную, чтобы перечитать его
+      const goHome = changed ? "/" : window.location.pathname;
+      setTimeout(() => { window.location.href = goHome; }, 800);
     });
     es.addEventListener("error", (e) => {
       try {

@@ -95,7 +95,10 @@ class Job:
         self.result: Optional[dict[str, Any]] = None
         self.error: Optional[dict[str, Any]] = None
         self._cancel_flag = threading.Event()
-        self._events: queue.Queue[Optional[JobEvent]] = queue.Queue(maxsize=10000)
+        # ← ИЗМЕНЕНО: list вместо Queue, чтобы subscribe+replay были
+        # атомарными под одним lock. См. subscribe_with_snapshot.
+        self._events: list[JobEvent] = []
+        self._events_max = 10000
         self._subscribers: list[queue.Queue[JobEvent]] = []
         self._lock = threading.RLock()
 
@@ -113,11 +116,11 @@ class Job:
     def emit(self, event_type: str, **data: Any) -> None:
         """Публикует событие: кладёт в основной буфер и рассылает подписчикам."""
         ev = JobEvent(event_type=event_type, data=data)
-        try:
-            self._events.put_nowait(ev)
-        except queue.Full:
-            pass  # не блокируем worker из-за медленного читателя
         with self._lock:
+            self._events.append(ev)
+            if len(self._events) > self._events_max:
+                # отбрасываем самые старые для длинных прогонов
+                del self._events[: len(self._events) - self._events_max]
             for q in list(self._subscribers):
                 try:
                     q.put_nowait(ev)
@@ -139,21 +142,24 @@ class Job:
             self._subscribers.append(q)
         return q
 
+    def subscribe_with_snapshot(self) -> tuple[queue.Queue[JobEvent], list[JobEvent]]:
+        """Атомарно: подписка + снимок уже накопленных событий.
+        Между subscribe и replay не может проскочить событие."""
+        with self._lock:
+            q: queue.Queue[JobEvent] = queue.Queue(maxsize=1000)
+            self._subscribers.append(q)
+            snapshot = list(self._events)
+        return q, snapshot
+
     def unsubscribe(self, q: queue.Queue[JobEvent]) -> None:
         with self._lock:
             if q in self._subscribers:
                 self._subscribers.remove(q)
 
     def replay_events(self) -> list[JobEvent]:
-        """Возвращает все уже накопленные события (для нового подписчика)."""
-        out: list[JobEvent] = []
-        while True:
-            try:
-                ev = self._events.get_nowait()
-                out.append(ev)
-            except queue.Empty:
-                break
-        return out
+        """Только для отладки. В sse_stream НЕ использовать — race."""
+        with self._lock:
+            return list(self._events)
 
     def finish(self, state: JobState, result: Optional[dict] = None,
                error: Optional[dict] = None) -> None:
@@ -327,18 +333,17 @@ def sse_stream(job: Job, heartbeat: float = 15.0):
     Завершается, когда job достиг терминального состояния и все события
     отправлены.
     """
-    # 1. Накопленные события
-    for ev in job.replay_events():
-        yield ev.to_sse()
-
-    # Если job уже завершён, больше ждать нечего
-    if job.state in TERMINAL_STATES:
-        yield "event: close\ndata: {}\n\n"
-        return
-
-    # 2. Подписка на новые события
-    q = job.subscribe()
+    # ← ИЗМЕНЕНО: атомарная подписка + снимок, чтобы не потерять событие,
+    # которое появится между replay_events и subscribe.
+    q, snapshot = job.subscribe_with_snapshot()
     try:
+        for ev in snapshot:
+            yield ev.to_sse()
+
+        if job.state in TERMINAL_STATES and q.empty():
+            yield "event: close\ndata: {}\n\n"
+            return
+
         last_heartbeat = time.time()
         while True:
             try:

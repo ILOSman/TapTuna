@@ -220,30 +220,38 @@ def classify_message(
     msg_status: str,
     has_ambiguity: bool,
     has_gap: bool,
-    constraints_failed: bool = False,
-    extract_failed: bool = False,
+    failure_kind: str | None = None,
 ) -> str:
     """Преобразует статус движка в один из пяти статусов верификации (§9).
 
-    Приоритет:
-    1. violation — constraints не выполнены.
-    2. ambiguous — сообщение попало в область перекрытия с конфликтом.
-    3. incomplete — не удалось извлечь все поля, есть неизвестные диапазоны.
-    4. ok — всё извлечено, constraints выполнены.
-    5. not_applicable — сообщение не относится к данной интерпретации.
+    Приоритет (важен порядок):
+    1. ambiguous    — сообщение попало в перекрытие с разными данными.
+    2. incomplete   — есть gap внутри сообщения (ТЗ §6.4: неизвестные
+                      байты не подменяются нулями, значит и constraint-ы
+                      на таких сообщениях проверять нельзя).
+    3. incomplete   — extract/partial (не удалось извлечь поля).
+    4. violation    — constraints не выполнены (failure_kind="constraint")
+                      и при этом сообщение не пересекает gap.
+    5. unknown_frame — движок не смог разобрать.
+    6. not_applicable — no_match.
+    7. ok           — всё извлечено, constraints выполнены.
     """
-    if constraints_failed:
-        return "violation"
     if has_ambiguity:
         return "ambiguous"
-    if extract_failed or msg_status == "partial":
-        return "incomplete"
-    if msg_status == "no_match":
-        return "not_applicable"
-    if msg_status == "unknown_frame":
-        return "unknown_frame"
+    # ← ИЗМЕНЕНО: has_gap теперь приоритетнее constraint. Если сообщение
+    #   пересекает gap, его поля содержат нули-заполнители, и любой
+    #   constraint, который «не выполнился», мог не выполниться именно
+    #   из-за нулей. Классифицируем как incomplete, а не violation.
     if has_gap:
         return "incomplete"
+    if failure_kind == "extract" or msg_status == "partial":
+        return "incomplete"
+    if failure_kind == "constraint":
+        return "violation"
+    if msg_status == "unknown_frame":
+        return "unknown_frame"
+    if msg_status == "no_match":
+        return "not_applicable"
     return "ok"
 
 
@@ -270,9 +278,57 @@ def _message_overlaps_gap(msg_offset: int, msg_length: int,
     return False
 
 
+# ← ДОБАВЛЕНО: возвращает пересечение диапазона сообщения с gaps.
+#   Координаты — абсолютные в потоке (совпадают с stream_offset).
+def _unknown_ranges_in_message(
+    msg_offset: int,
+    msg_length: int,
+    gaps: list[dict],
+) -> list[tuple[int, int]]:
+    end = msg_offset + msg_length
+    out: list[tuple[int, int]] = []
+    for g in gaps:
+        g_start = g.get("offset", 0)
+        g_end = g_start + g.get("length", 0)
+        if msg_offset < g_end and end > g_start:
+            out.append((max(msg_offset, g_start), min(end, g_end)))
+    return out
+
 # ---------------------------------------------------------------------------
 # Прогон верификации
 # ---------------------------------------------------------------------------
+
+# ← ДОБАВЛЕНО: внутренний маркер отмены.
+# Нужен, чтобы `except Exception` не перезаписал status='cancelled'
+# на 'failed'. Наружу не выходит — verify_corpus конвертирует его
+# в ValidationError(code="CANCELLED").
+class _Cancelled(Exception):
+    pass
+
+
+# ← ДОБАВЛЕНО: берём overlap-политику из directions, а не из манифеста.
+# Причина: reassembled-байты собраны при ingest с политикой, записанной
+# в directions.overlap_policy. Если пользователь потом поменяет
+# manifest.json — отчёт не должен врать про политику, применённую
+# к конкретным байтам.
+def _collect_overlap_policies(conn, sessions: list[dict]) -> str:
+    """Возвращает единую overlap_policy по всем направлениям сессий.
+    'mixed' — если политики различаются; 'unknown' — если данных нет."""
+    seen: set[str] = set()
+    cur = conn.cursor()
+    for s in sessions:
+        cur.execute(
+            "SELECT DISTINCT overlap_policy FROM directions WHERE session_id = ?",
+            (s["id"],),
+        )
+        for r in cur.fetchall():
+            seen.add(r[0])
+    if not seen:
+        return "unknown"
+    if len(seen) == 1:
+        return next(iter(seen))
+    return "mixed"
+
 
 def verify_corpus(
     project_dir: Path,
@@ -337,12 +393,18 @@ def verify_corpus(
     )
 
     # 3. Отбираем сессии
+    # 3. Отбираем сессии
     sessions = select_sessions(conn, criteria)
     progress(f"selected {len(sessions)} sessions", 0.05)
 
+    # ← ИЗМЕНЕНО: overlap-политику берём из directions,
+    # а не из манифеста. Байты собраны при ingest с политикой из
+    # directions.overlap_policy; именно она должна попасть в отчёт.
+    actual_overlap = _collect_overlap_policies(conn, sessions)
+
     # 4. Создаём прогон
     params = {
-        "overlap": _get_policy(conn, project_dir, "overlap"),
+        "overlap": actual_overlap,
         "checksum": _get_policy(conn, project_dir, "checksum"),
         "max_output_bytes": _get_policy(conn, project_dir, "max_output_bytes"),
         "seed": seed,
@@ -366,19 +428,19 @@ def verify_corpus(
         for idx, session in enumerate(sessions):
             if cancel_check and cancel_check():
                 cur.execute(
-                    "UPDATE verification_runs SET status='cancelled', finished_at=datetime('now') WHERE id=?",
+                    "UPDATE verification_runs SET status='cancelled', "
+                    "finished_at=datetime('now') WHERE id=?",
                     (run_id,),
                 )
                 conn.commit()
-                raise ValidationError(
-                    code="CANCELLED",
-                    message="verification cancelled by user",
-                    details={"run_id": run_id},
-                )
+                # ← ИЗМЕНЕНО: внутренний маркер, чтобы нижний
+                #   `except Exception` не перезаписал статус на 'failed'.
+                raise _Cancelled()
 
             directions = _get_directions_for_session(conn, session["id"])
             if criteria.directions:
-                directions = [d for d in directions if d["direction"] in criteria.directions]
+                directions = [d for d in directions
+                              if d["direction"] in criteria.directions]
 
             for direction in directions:
                 stream = _load_stream(project_dir, direction)
@@ -397,9 +459,10 @@ def verify_corpus(
                         message_name=interpreter.name,
                         status=MessageStatus.UNKNOWN_FRAME,
                         notes=[f"interpreter error: {type(e).__name__}: {e}"],
+                        failure_kind="framing",   # ← ДОБАВЛЕНО
                     )]
 
-                                # Если интерпретатор вернул 0 сообщений на непустом потоке —
+                # Если интерпретатор вернул 0 сообщений на непустом потоке —
                 # это «неизвестный участок». Записываем один результат на
                 # весь поток, чтобы он попал в §6 отчёта.
                 if not msgs and stream:
@@ -413,25 +476,33 @@ def verify_corpus(
                             "framing did not match any message on this stream; "
                             f"stream length = {len(stream)} bytes"
                         ],
+                        failure_kind="framing",   # ← ДОБАВЛЕНО
                     )]
 
                 ambiguities = json.loads(direction["ambiguities_json"] or "[]")
                 gaps = json.loads(direction["gaps_json"] or "[]")
 
                 for m in msgs:
-                    has_amb = _message_overlaps_ambiguity(m.stream_offset, m.length, ambiguities)
-                    has_gap = _message_overlaps_gap(m.stream_offset, m.length, gaps)
+                    has_amb = _message_overlaps_ambiguity(
+                        m.stream_offset, m.length, ambiguities)
+                    has_gap = _message_overlaps_gap(
+                        m.stream_offset, m.length, gaps)
 
-                    # constraints_failed/extract_failed различаем по notes
-                    constraints_failed = any("constraint" in n.lower() for n in m.notes)
-                    extract_failed = any("extract failed" in n.lower() for n in m.notes)
+                    # ← ДОБАВЛЕНО: заполняем unknown_ranges конкретными
+                    #   диапазонами из gaps, попадающими в это сообщение.
+                    #   До этого поле всегда оставалось пустым.
+                    unknown = _unknown_ranges_in_message(
+                        m.stream_offset, m.length, gaps)
+                    if unknown:
+                        m.unknown_ranges = unknown
 
+                    # ← ИЗМЕНЕНО: classify_message получает структурное
+                    #   поле failure_kind вместо матчинга подстрок.
                     status = classify_message(
                         msg_status=m.status.value,
                         has_ambiguity=has_amb,
                         has_gap=has_gap,
-                        constraints_failed=constraints_failed,
-                        extract_failed=extract_failed,
+                        failure_kind=m.failure_kind,
                     )
 
                     msg_dict = {
@@ -476,13 +547,23 @@ def verify_corpus(
                SET status='completed', finished_at=datetime('now'),
                    summary_json=?
                WHERE id=?""",
-            (_canonical_json({**summary, "verdict": verdict, "run_hash": run_hash}), run_id),
+            (_canonical_json({**summary, "verdict": verdict,
+                              "run_hash": run_hash}), run_id),
         )
         conn.commit()
 
+    # ← ИЗМЕНЕНО: _Cancelled ловим ДО общего except, чтобы не перезаписать
+    #   'cancelled' на 'failed'. Наружу конвертируем в ValidationError.
+    except _Cancelled:
+        raise ValidationError(
+            code="CANCELLED",
+            message="verification cancelled by user",
+            details={"run_id": run_id},
+        )
     except Exception:
         cur.execute(
-            "UPDATE verification_runs SET status='failed', finished_at=datetime('now') WHERE id=?",
+            "UPDATE verification_runs SET status='failed', "
+            "finished_at=datetime('now') WHERE id=?",
             (run_id,),
         )
         conn.commit()
@@ -527,10 +608,14 @@ def _get_directions_for_session(conn, session_id: int) -> list[dict]:
 def _load_stream(project_dir: Path, direction: dict) -> bytes:
     """Восстанавливает reassembled-поток из packets + gaps.
 
-    Простая модель: склеиваем payload'ы пакетов направления, вставляя
-    нулевые байты на места gaps. Zero-fill запрещён ТЗ (§6.4), но для
-    верификации нам нужен непрерывный буфер фиксированной длины;
-    используем stream_offset пакетов, чтобы вставить данные точно на места.
+    ВАЖНО: буфер содержит zero-fill на местах gaps, потому что framing
+    в native принимает сплошной массив байт. Это само по себе нарушало бы
+    ТЗ §6.4, но фактическое «сокрытие» неизвестности предотвращается
+    уровнем выше: verify_corpus для каждого сообщения проверяет
+    пересечение с `direction.gaps_json` и:
+      - заполняет MessageResult.unknown_ranges;
+      - заставляет classify_message вернуть 'incomplete'.
+    См. _unknown_ranges_in_message / classify_message.
     """
     from .store import get_packets, read_blob
 
@@ -605,23 +690,29 @@ def get_results(
 
 
 def mark_stale(conn) -> int:
-    """Помечает stale те результаты, чей прогон использовал устаревшую
-    версию интерпретации или политики.
+    """Помечает stale прогоны, чья интерпретация отличается по
+    СОДЕРЖИМОМУ (source_hash) от последней версии с тем же именем.
 
-    Возвращает число помеченных строк. Запускается при чтении.
+    Если сделали interp-add с тем же YAML — version увеличилась, но
+    source_hash тот же. Такие результаты stale НЕ помечаются: правила
+    разбора не изменились, только номер версии.
+
+    Возвращает число помеченных строк.
     """
     cur = conn.cursor()
-    # Находим прогоны с не последней версией интерпретации
     cur.execute("""
         UPDATE verification_results
         SET stale = 1
         WHERE run_id IN (
             SELECT vr.id
             FROM verification_runs vr
-            JOIN interpretations i ON i.id = vr.interpretation_id
-            WHERE EXISTS (
-                SELECT 1 FROM interpretations i2
-                WHERE i2.name = i.name AND i2.version > i.version
+            JOIN interpretations i_run ON i_run.id = vr.interpretation_id
+            WHERE i_run.source_hash != (
+                SELECT i_latest.source_hash
+                FROM interpretations i_latest
+                WHERE i_latest.name = i_run.name
+                ORDER BY i_latest.version DESC
+                LIMIT 1
             )
         )
     """)

@@ -27,7 +27,7 @@ def test_create_manifest(tmp_path: Path):
     assert "policies" in manifest
     assert manifest["policies"]["checksum"] == "verify"
     assert manifest["policies"]["overlap"] == "first_wins"
-    assert manifest["policies"]["max_output_bytes"] == 10_485_760
+    assert manifest["policies"]["max_output_bytes"] == 2 * 1024 * 1024 * 1024
     assert manifest["policies"]["blob_inline_threshold"] == 4096
 
     # Файл создан

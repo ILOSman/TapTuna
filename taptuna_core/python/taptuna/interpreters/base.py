@@ -27,6 +27,13 @@ class MessageResult:
     fields: dict[str, Any] = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)
     unknown_ranges: list[tuple[int, int]] = field(default_factory=list)
+    # ← ДОБАВЛЕНО: структурный признак причины отказа.
+    #   None          — нет ошибки;
+    #   "extract"     — не удалось извлечь поля;
+    #   "constraint"  — constraints не выполнены или упали;
+    #   "framing"     — не удалось разбить поток.
+    # Нужен для classify_message вместо матчинга подстрок в notes.
+    failure_kind: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -38,6 +45,7 @@ class MessageResult:
             "fields": self.fields,
             "notes": self.notes,
             "unknown_ranges": [list(r) for r in self.unknown_ranges],
+            "failure_kind": self.failure_kind,
         }
 
 

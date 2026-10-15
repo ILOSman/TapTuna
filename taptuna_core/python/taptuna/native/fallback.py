@@ -77,8 +77,53 @@ def reassemble_py(
 
     stream_start_abs_seq = reference if roles_established else (segs[0]["abs_seq"] if segs else 0)
 
-    # Основной цикл
-    known_data: list[tuple[int, int]] = []   # (offset, byte)
+    # ← ИЗМЕНЕНО: вместо списка (offset, byte) — bytearray + интервалы.
+    # Было: ~60 байт Python-объекта на каждый байт потока. Для 10 МиБ
+    # потока это ~600 МиБ. Стало: 1 байт на байт + список (start, end).
+    data_buf = bytearray()
+    written: list[tuple[int, int]] = []   # [start, end), отсортированы, не пересекаются
+
+    def _write_range(offset: int, bs: bytes) -> None:
+        if not bs:
+            return
+        end = offset + len(bs)
+        if len(data_buf) < end:
+            data_buf.extend(b"\x00" * (end - len(data_buf)))
+        data_buf[offset:end] = bs
+
+        if not written:
+            written.append((offset, end))
+            return
+        i = 0
+        while i < len(written) and written[i][0] <= offset:
+            i += 1
+        new_start, new_end = offset, end
+        from_idx = i
+        if i > 0:
+            s, e = written[i - 1]
+            if e >= offset:
+                new_start = s
+                new_end = max(new_end, e)
+                from_idx = i - 1
+        to_idx = i
+        while to_idx < len(written) and written[to_idx][0] <= new_end:
+            new_end = max(new_end, written[to_idx][1])
+            to_idx += 1
+        written[from_idx:to_idx] = [(new_start, new_end)]
+
+    def _read_range(offset: int, length: int) -> bytes:
+        out = bytearray(length)
+        end = offset + length
+        for (s, e) in written:
+            if e <= offset:
+                continue
+            if s >= end:
+                break
+            rs = max(s, offset)
+            re = min(e, end)
+            out[rs - offset:re - offset] = data_buf[rs:re]
+        return bytes(out)
+
     gaps: list[dict] = []
     ambiguities: list[dict] = []
     stream_segments: list[dict] = []
@@ -139,12 +184,9 @@ def reassemble_py(
             overlap_len = 0
 
         if 0 < overlap_len <= seg["len"]:
-            existing = [
-                b for (off, b) in known_data
-                if seg_offset <= off < seg_offset + overlap_len
-            ]
-            new = list(seg["data"][:overlap_len])
-            conflict = existing != new
+            existing = _read_range(seg_offset, overlap_len)
+            new_bytes = seg["data"][:overlap_len]
+            conflict = existing != new_bytes
             if conflict:
                 ambiguities.append({
                     "offset": seg_offset,
@@ -153,12 +195,7 @@ def reassemble_py(
                     "policy": overlap_policy,
                 })
                 if overlap_policy == "last_wins":
-                    known_data = [
-                        (off, b) for (off, b) in known_data
-                        if off < seg_offset or off >= seg_offset + overlap_len
-                    ]
-                    for i, b in enumerate(seg["data"][:overlap_len]):
-                        known_data.append((seg_offset + i, b))
+                    _write_range(seg_offset, new_bytes)
                 # first_wins и halt_and_mark оставляют existing
 
         # Хвост без перекрытия
@@ -166,9 +203,10 @@ def reassemble_py(
         if tail_start < seg["len"]:
             tail = seg["data"][tail_start:]
             tail_offset = seg_offset + tail_start
-            for i, b in enumerate(tail):
-                known_data.append((tail_offset + i, b))
-            byte_map.append((tail_offset, tail_offset + len(tail), seg["frame_number"]))
+            _write_range(tail_offset, tail)
+            byte_map.append(
+                (tail_offset, tail_offset + len(tail), seg["frame_number"])
+            )
 
         # Обновление contiguous
         if seg_offset <= contiguous_end_offset and data_end_offset > contiguous_end_offset:
@@ -193,13 +231,12 @@ def reassemble_py(
             "last_frame": seg["frame_number"],
         })
 
-    # Сборка данных
-    known_data.sort(key=lambda x: x[0])
-    data = bytes(b for (_, b) in known_data)
+    # Сборка данных: склеиваем known-интервалы по порядку, gaps пропускаем.
+    result_data = b"".join(data_buf[s:e] for (s, e) in written)
     byte_map.sort(key=lambda x: x[0])
 
     return {
-        "data": data,
+        "data": result_data,
         "gaps": gaps,
         "ambiguities": ambiguities,
         "segments": stream_segments,

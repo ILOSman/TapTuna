@@ -18,6 +18,10 @@ python-source = "python"
 module-name = "taptuna._native"
 manifest-path = "Cargo.toml"
 bindings = "pyo3"
+include = [
+    { path = "python/taptuna/examples/**/*", format = "sdist" },
+    { path = "python/taptuna/examples/**/*", format = "wheel" },
+]
 
 [project.scripts]
 taptuna = "taptuna.cli:main"

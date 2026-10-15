@@ -64,6 +64,7 @@ class DeclarativeInterpreter(BaseInterpreter):
                     message_name=self.name,
                     status=MessageStatus.PARTIAL,
                     notes=[f"extract failed: {e}"],
+                    failure_kind="extract",   # ← ДОБАВЛЕНО
                 ))
                 continue
 
@@ -81,6 +82,7 @@ class DeclarativeInterpreter(BaseInterpreter):
                         status=MessageStatus.PARTIAL,
                         fields=fields,
                         notes=[f"constraint eval failed: {e}"],
+                        failure_kind="constraint",   # ← ДОБАВЛЕНО
                     ))
                     continue
 
@@ -93,6 +95,9 @@ class DeclarativeInterpreter(BaseInterpreter):
                         status=MessageStatus.NO_MATCH,
                         fields=fields,
                         notes=["constraints not satisfied"],
+                        # ← ДОБАВЛЕНО: именно это сообщение становится
+                        #   violation в верификации.
+                        failure_kind="constraint",
                     ))
                     continue
 

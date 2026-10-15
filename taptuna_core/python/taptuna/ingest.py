@@ -171,11 +171,34 @@ def run_tshark(
         assert proc.stdout is not None
         assert proc.stderr is not None
 
-        # Читаем stdout построчно, stderr — в фоне (простой вариант: non-blocking select).
-        # Для краткости используем communicate() с ограничением, но это удержит весь
-        # вывод в памяти. Для 100 МиБ PCAP это ~ десятки МиБ — приемлемо.
-        # Если нужен стриминговый режим — см. комментарий ниже.
-        stdout, stderr = proc.communicate(timeout=timeout)
+        # ← ИЗМЕНЕНО: вместо blocking communicate() — цикл с коротким
+        # таймаутом. Так cancel_check видит отмену во время работы tshark,
+        # а не только после возврата. Иначе на 100 МиБ PCAP Ctrl+C
+        # не останавливал бы tshark до конца.
+        stdout = b""
+        stderr = b""
+        while True:
+            try:
+                stdout, stderr = proc.communicate(timeout=0.5)
+                break
+            except subprocess.TimeoutExpired:
+                if cancel_check and cancel_check():
+                    proc.kill()
+                    proc.communicate()
+                    raise ProtocolLabError(
+                        code="CANCELLED",
+                        message="ingest cancelled by user",
+                        details={"pcap": str(pcap_path)},
+                    )
+                if time.monotonic() - start > timeout:
+                    proc.kill()
+                    proc.communicate()
+                    raise ProtocolLabError(
+                        code="TSHARK_TIMEOUT",
+                        message=f"tshark exceeded {timeout}s",
+                        details={"pcap": str(pcap_path)},
+                    )
+
         stderr_chunks.append(stderr)
 
         if proc.returncode != 0:
@@ -196,13 +219,6 @@ def run_tshark(
             )
 
         for line in text.splitlines():
-            if cancel_check and cancel_check():
-                proc.kill()
-                raise ProtocolLabError(
-                    code="CANCELLED",
-                    message="ingest cancelled by user",
-                    details={},
-                )
             row = _parse_line(line)
             if row is not None:
                 rows.append(row)

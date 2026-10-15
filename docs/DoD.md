@@ -138,12 +138,12 @@ JSON-файлы `dhat-heap-<N>MiB.json` открываются в
 
 | Набор | Команда | Результат |
 |---|---|---|
-| Rust unit | `cargo test --lib` | 22 passed |
+| Rust unit | `cargo test --lib` | 27 passed |
 | Rust cross-check | `cargo test --test cross_check` | 1 passed |
 | Rust property | `cargo test --test property` | 4 passed |
 | **Rust всего** | `cargo test` | **27 passed** |
 | Rust bench | `cargo bench --no-run` | ✅ |
-| Python unit | `pytest tests/ -v` | **49 passed** |
+| Python unit | `pytest tests/ -v` | **51 passed** |
 | Cross-validation | `pytest tests/test_cross_validation.py` | 4 passed |
 | Portability | `pytest tests/test_portability.py` | 4 passed |
 | Reports | `pytest tests/test_reports.py` | 6 passed |
@@ -156,7 +156,7 @@ JSON-файлы `dhat-heap-<N>MiB.json` открываются в
 | E2E | `make test-examples` | ALL OK |
 | Fallback | `TAPTUNA_NATIVE=0 pytest tests/` | 49 passed |
 
-**Итого:** 27 Rust + 49 Python (native) / 44+5 skip (fallback).
+**Итого:** 27 Rust + 51 Python (native) / 44+5 skip (fallback).
 
 ## 6. CI: сборка колёс
 
@@ -179,6 +179,14 @@ GitHub Actions workflow `.github/workflows/wheels.yml`.
 - Script-sandbox: CPU 10 с, память 512 MiB, wall-clock 5 с на сообщение.
 - `macos-13` (Intel) исключён из CI — queue starvation на GitHub;
   доступен `macos-14` (arm64) + Linux x86_64/arm64 (glibc/musl) + Windows.
+- **Zero-fill в `_load_stream`**: framing принимает сплошной массив,
+  на местах gaps — нули. Скрытие неизвестности предотвращается на уровне
+  `verify_corpus`: сообщение, пересекающее gap, получает `incomplete`
+  и непустой `unknown_ranges`. См. `docs/ARCHITECTURE.md`.
+- **`params_json.overlap`**: берётся из `directions.overlap_policy`,
+  а не из манифеста (байты собраны с политикой при ingest).
+- **`mark_stale`**: помечает stale по `source_hash`, а не по version.
+  Повторный `interp-add` того же YAML не делает результаты устаревшими.
 
 ## 8. Как воспроизвести этот документ
 

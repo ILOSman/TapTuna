@@ -12,6 +12,7 @@
     <a href="{{ url_for('ui.index') }}">TapTuna</a>
     <span class="project-name">{{ project_name }}</span>
   </div>
+  {% if request.endpoint != 'ui.welcome' %}
   <nav>
     <a href="{{ url_for('ui.index') }}">Главная</a>
     <a href="{{ url_for('ui.sessions') }}">Сессии</a>
@@ -21,7 +22,9 @@
     <a href="{{ url_for('ui.action_log') }}">Журнал</a>
     <a href="{{ url_for('ui.report') }}">Отчёт</a>
     <a href="{{ url_for('ui.project') }}">Проект</a>
+    <a href="{{ url_for('ui.welcome') }}" title="Сменить проект">⇄</a>
   </nav>
+  {% endif %}
 </header>
 
 <main id="main">

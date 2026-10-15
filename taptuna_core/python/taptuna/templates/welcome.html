@@ -1,0 +1,282 @@
+{% extends "base.html" %}
+{% block title %}Проекты{% endblock %}
+{% block content %}
+
+<h1>TapTuna</h1>
+<p class="muted">Лаборатория протоколов. Выберите проект, создайте новый
+или импортируйте <code>.taptuna.zip</code>.</p>
+<p class="muted small" id="tshark-warn" style="display:none">
+  <span style="color:#b7791f">⚠ tshark не найден в PATH.</span>
+  Без него не работает импорт PCAP.
+  <a href="/setup-tshark">Настроить</a>
+</p>
+
+<section class="card">
+  <h2>Создать проект</h2>
+  <div class="row">
+    <input type="text" id="new-name" placeholder="имя проекта, например sensor1"
+           style="width:260px">
+    <span class="muted small" id="new-hint">
+      Будет создан в <code>~/TapTuna/projects/&lt;имя&gt;</code>
+    </span>
+    <span class="spacer"></span>
+    <button id="new-btn" class="primary">Создать</button>
+  </div>
+</section>
+
+<section class="card">
+  <h2>Импортировать</h2>
+  <div class="row">
+    <label class="btn primary" style="cursor:pointer">
+      📂 Выбрать файл…
+      <input type="file" id="import-file" accept=".zip,.taptuna.zip" hidden>
+    </label>
+    <span id="import-filename" class="muted small">файл не выбран</span>
+    <span class="spacer"></span>
+    <button id="import-btn" class="primary" disabled>Импортировать</button>
+  </div>
+  <p class="muted small" style="margin-top:0.4rem">
+    Или перетащите <code>.taptuna.zip</code> в окно.
+    Путь на сервере (для CLI): <input type="text" id="import-path"
+      placeholder="/путь/к/sensor1.taptuna.zip"
+      style="width:280px; margin-left:0.4rem">
+  </p>
+</section>
+
+<section class="card">
+  <h2>Проекты ({{ projects|length }})</h2>
+  {% if projects %}
+  <table>
+    <thead>
+      <tr>
+        <th>Имя</th>
+        <th>Путь</th>
+        <th>Размер</th>
+        <th>Открыт</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for p in projects %}
+      <tr {% if p.id == active_id %}style="background:#eef5ff"{% endif %}>
+        <td>
+          <strong>{{ p.name }}</strong>
+          {% if p.id == active_id %}
+            <span class="status ok" style="margin-left:0.4rem">активный</span>
+          {% endif %}
+        </td>
+        <td class="mono small muted">{{ p.path }}</td>
+        <td class="small">{{ (p.size_bytes / 1024 / 1024) | round(1) }} MiB</td>
+        <td class="small muted">{{ p.last_opened }}</td>
+        <td style="white-space:nowrap">
+          <button class="open-btn" data-id="{{ p.id }}">Открыть</button>
+          <a class="btn" href="/api/projects/{{ p.name }}/export_download"
+             download>↓ Экспорт</a>
+          <button class="forget-btn danger" data-id="{{ p.id }}">Убрать</button>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">Проектов пока нет. Создайте первый выше.</p>
+  {% endif %}
+</section>
+
+<!-- Модальное окно: показать путь и OK -->
+<div id="path-modal" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0;
+     background:rgba(0,0,0,0.4); z-index:400; align-items:center; justify-content:center;">
+  <div style="background:#fff; border-radius:8px; max-width:600px; width:90%; padding:1rem;">
+    <div class="row">
+      <h3 style="margin:0" id="path-modal-title">Готово</h3>
+      <span class="spacer"></span>
+      <button id="path-modal-close" type="button">×</button>
+    </div>
+    <p class="small" style="margin:0.6rem 0 0.4rem 0" id="path-modal-msg">—</p>
+    <pre class="mono small" id="path-modal-path"
+         style="background:#fbfbfd; padding:0.5rem; overflow:auto"></pre>
+    <div class="row" style="margin-top:0.6rem">
+      <span class="spacer"></span>
+      <button id="path-modal-ok" class="primary">OK</button>
+    </div>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  "use strict";
+
+  const newName = document.getElementById("new-name");
+  const newBtn = document.getElementById("new-btn");
+  const importPath = document.getElementById("import-path");
+  const importBtn = document.getElementById("import-btn");
+
+  const pathModal = document.getElementById("path-modal");
+  const pathModalTitle = document.getElementById("path-modal-title");
+  const pathModalMsg = document.getElementById("path-modal-msg");
+  const pathModalPath = document.getElementById("path-modal-path");
+  const pathModalClose = document.getElementById("path-modal-close");
+  const pathModalOk = document.getElementById("path-modal-ok");
+
+  (async () => {
+    try {
+      const d = await window.taptuna.api("GET", "/api/system/tshark");
+      if (!d.ok) {
+        document.getElementById("tshark-warn").style.display = "block";
+      }
+    } catch (e) { /* тихо */ }
+  })();
+
+  function showPath(title, msg, path) {
+    pathModalTitle.textContent = title || "Готово";
+    pathModalMsg.textContent = msg || "";
+    pathModalPath.textContent = path || "";
+    pathModal.style.display = "flex";
+  }
+  function closePath() {
+    pathModal.style.display = "none";
+  }
+  pathModalClose.addEventListener("click", closePath);
+  pathModalOk.addEventListener("click", closePath);
+  pathModal.addEventListener("click", (e) => {
+    if (e.target === pathModal) closePath();
+  });
+
+  // --- Создать ---
+  newBtn.addEventListener("click", async () => {
+    const name = (newName.value || "").trim();
+    if (!name) { window.taptuna.toast("Введите имя проекта", "err"); return; }
+    try {
+      const d = await window.taptuna.api("POST", "/api/projects/create",
+        { name });
+      window.taptuna.toast("Создан: " + d.name, "ok");
+      setTimeout(() => window.location.href = "/", 400);
+    } catch (e) {
+      window.taptuna.toast(e.message, "err");
+    }
+  });
+  newName.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") newBtn.click();
+  });
+
+  // --- Импорт zip ---
+  const importFile = document.getElementById("import-file");
+  const importFilename = document.getElementById("import-filename");
+
+  function setImportFile(file) {
+    if (!file) {
+      importFilename.textContent = "файл не выбран";
+      importBtn.disabled = true;
+      return;
+    }
+    if (!file.name.toLowerCase().endsWith(".zip")) {
+      window.taptuna.toast("Ожидается .zip или .taptuna.zip", "err");
+      importFile.value = "";
+      importFilename.textContent = "файл не выбран";
+      importBtn.disabled = true;
+      return;
+    }
+    importFilename.textContent = file.name +
+      " (" + window.taptuna.formatBytes(file.size) + ")";
+    importBtn.disabled = false;
+  }
+
+  importFile.addEventListener("change", () => {
+    setImportFile(importFile.files[0] || null);
+  });
+
+  importBtn.addEventListener("click", async () => {
+    // Приоритет: загруженный файл → путь на сервере.
+    const picked = importFile.files[0];
+    const serverPath = (importPath.value || "").trim();
+
+    if (!picked && !serverPath) {
+      window.taptuna.toast("Выберите файл или укажите путь на сервере", "err");
+      return;
+    }
+
+    importBtn.disabled = true;
+    importBtn.textContent = "Импорт…";
+    try {
+      let d;
+      if (picked) {
+        const fd = new FormData();
+        fd.append("file", picked);
+        const r = await fetch("/api/projects/import", {
+          method: "POST",
+          body: fd,
+        });
+        const data = await r.json();
+        if (!r.ok) {
+          const m = (data && data.error && data.error.message)
+            || ("HTTP " + r.status);
+          throw new Error(m);
+        }
+        d = data;
+      } else {
+        d = await window.taptuna.api("POST", "/api/projects/import",
+          { source_path: serverPath });
+      }
+      window.taptuna.toast("Импортирован: " + d.name, "ok");
+      setTimeout(() => window.location.href = "/", 400);
+    } catch (e) {
+      window.taptuna.toast(e.message, "err");
+      importBtn.disabled = false;
+      importBtn.textContent = "Импортировать";
+    }
+  });
+
+  // Drag-n-drop на всю страницу
+  document.addEventListener("dragover", (e) => {
+    e.preventDefault();
+    document.body.style.background = "#f0f6fb";
+  });
+  document.addEventListener("dragleave", () => {
+    document.body.style.background = "";
+  });
+  document.addEventListener("drop", (e) => {
+    e.preventDefault();
+    document.body.style.background = "";
+    if (e.dataTransfer.files.length) {
+      setImportFile(e.dataTransfer.files[0]);
+    }
+  });
+
+  // --- Открыть ---
+  document.querySelectorAll(".open-btn").forEach((b) => {
+    b.addEventListener("click", async () => {
+      try {
+        const d = await window.taptuna.api("POST", "/api/projects/open",
+          { id: b.dataset.id });
+        window.taptuna.toast("Открыт: " + d.name, "ok");
+        setTimeout(() => window.location.href = "/", 300);
+      } catch (e) {
+        window.taptuna.toast(e.message, "err");
+      }
+    });
+  });
+
+  // --- Экспорт ---
+  // Ничего не нужно: браузер сам скачает файл по ссылке
+  // <a href="/api/projects/<name>/export_download" download>.
+  // В Electron эту ссылку перехватим и покажем нативный save dialog.
+
+  // --- Forget ---
+  document.querySelectorAll(".forget-btn").forEach((b) => {
+    b.addEventListener("click", async () => {
+      if (!confirm("Убрать проект из списка? Файлы на диске не удалятся.")) return;
+      try {
+        await window.taptuna.api("DELETE", "/api/projects/" + b.dataset.id);
+        window.taptuna.toast("Убран из реестра", "ok");
+        setTimeout(() => window.location.reload(), 300);
+      } catch (e) {
+        window.taptuna.toast(e.message, "err");
+      }
+    });
+  });
+})();
+</script>
+{% endblock %}

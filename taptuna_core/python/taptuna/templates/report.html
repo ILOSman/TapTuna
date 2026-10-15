@@ -42,7 +42,7 @@
       <tr>
         <td class="mono small">{{ r.name }}</td>
         <td>{{ (r.size / 1024) | round(1) }} KiB</td>
-        <td class="small">{{ r.mtime | int }}</td>
+        <td class="small">{{ r.mtime | dt }}</td>
         <td>
           <a class="btn" href="/reports/{{ r.name }}" target="_blank">Открыть</a>
         </td>

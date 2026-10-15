@@ -1,27 +1,77 @@
 """UI-маршруты: HTML-страницы на Jinja2 (§16)."""
 from __future__ import annotations
 
-from pathlib import Path
-
-from flask import Blueprint, abort, current_app, render_template, send_from_directory
 import json
 from pathlib import Path
+from typing import Optional
+from datetime import datetime
+
+from flask import Blueprint, abort, current_app, render_template, send_from_directory
 
 bp = Blueprint("ui", __name__)
 
+from typing import Optional
+from datetime import datetime
 
 
-def _project() -> Path:
-    return Path(current_app.config["PROJECT_DIR"])
+@bp.app_template_filter("dt")
+def _dt_filter(value):
+    """Фильтр даты для шаблонов: epoch → 'YYYY-MM-DD HH:MM'."""
+    if value is None:
+        return "—"
+    try:
+        return datetime.fromtimestamp(float(value)).strftime("%Y-%m-%d %H:%M")
+    except (TypeError, ValueError, OSError):
+        return str(value)
+
+
+def _project() -> Optional[Path]:
+    """Путь к активному проекту или None (GUI-режим)."""
+    p = current_app.config.get("PROJECT_DIR")
+    return Path(p) if p else None
+
+
+def _require_project():
+    """Если активного проекта нет — редирект на /welcome.
+
+    Возвращает Path либо flask-объект Response (redirect).
+    """
+    from flask import redirect, url_for
+    p = _project()
+    if p is None:
+        return None, redirect(url_for("ui.welcome"))
+    return p, None
+
+
+def _display_name() -> str:
+    """Отображаемое имя активного проекта (из реестра, не из папки)."""
+    from . import projects as pj
+    p = _project()
+    if p is None:
+        return "TapTuna"
+    entry = pj.find_by_path(p)
+    return entry["name"] if entry else p.name
 
 
 def _db():
     from .store import open_db
-    return open_db(_project())
+    p = _project()
+    if p is None:
+        raise FileNotFoundError("no active project")
+    return open_db(p)
 
 @bp.route("/")
 def index():
+    """Главная. Если нет проекта — /welcome, если нет tshark — /setup-tshark."""
+    from flask import redirect, url_for
+    from .tshark_check import get_tshark_path
+
     p = _project()
+    if p is None:
+        return redirect(url_for("ui.welcome"))
+    if get_tshark_path() is None:
+        return redirect(url_for("ui.setup_tshark"))
+
     initialized = (p / "manifest.json").exists()
     captures = []
     if initialized:
@@ -37,13 +87,42 @@ def index():
                 conn.close()
         except Exception:
             captures = []
-    return render_template("index.html", project_name=p.name,
+    return render_template("index.html", project_name=_display_name(),
                            initialized=initialized, captures=captures)
 
 
+@bp.route("/welcome")
+def welcome():
+    """Экран выбора/создания проекта. Работает без активного проекта."""
+    from . import projects as pj
+
+    items = pj.list_projects()
+    active = _project()
+    active_name = active.name if active else None
+    return render_template(
+        "welcome.html",
+        project_name=active_name or "TapTuna",
+        projects=items,
+        active_id=active_name,
+    )
+
+@bp.route("/setup-tshark")
+def setup_tshark():
+    """Экран «tshark не найден». Работает без активного проекта."""
+    from .tshark_check import get_tshark_path
+    p = _project()
+    return render_template(
+        "setup_tshark.html",
+        project_name=_display_name() if p else "TapTuna",
+        tshark_missing=get_tshark_path() is None,
+    )
+
 @bp.route("/sessions")
 def sessions():
-    p = _project()
+    from flask import redirect, url_for
+    p, redir = _require_project()
+    if redir:
+        return redir
     sessions_list = []
     captures = []
     try:
@@ -80,7 +159,9 @@ def sessions():
 
 @bp.route("/sessions/<int:session_id>")
 def session_detail(session_id: int):
-    p = _project()
+    p, redir = _require_project()
+    if redir:
+        return redir
     try:
         conn = _db()
         try:
@@ -119,7 +200,9 @@ def session_detail(session_id: int):
 
 @bp.route("/research")
 def research():
-    p = _project()
+    p, redir = _require_project()
+    if redir:
+        return redir
     captures = []
     sessions_list = []
     interps = []
@@ -167,7 +250,9 @@ def research():
 
 @bp.route("/interpretations")
 def interpretations():
-    p = _project()
+    p, redir = _require_project()
+    if redir:
+        return redir
     interps = []
     sessions_list = []
     try:
@@ -191,7 +276,9 @@ def interpretations():
 
 @bp.route("/verification")
 def verification():
-    p = _project()
+    p, redir = _require_project()
+    if redir:
+        return redir
     corpora = []
     interps = []
     runs = []
@@ -248,7 +335,9 @@ def verification():
 
 @bp.route("/action-log")
 def action_log():
-    p = _project()
+    p, redir = _require_project()
+    if redir:
+        return redir
     logs = []
     entries = {}
     try:
@@ -281,7 +370,9 @@ def action_log():
 
 @bp.route("/project")
 def project():
-    p = _project()
+    p, redir = _require_project()
+    if redir:
+        return redir
     from .manifest import load_manifest
 
     manifest = {}
@@ -323,7 +414,9 @@ def project():
 
 @bp.route("/report")
 def report():
-    p = _project()
+    p, redir = _require_project()
+    if redir:
+        return redir
     from .reports import list_reports
     reports = list_reports(p)
 
@@ -361,6 +454,10 @@ def report():
 @bp.route("/reports/<path:name>")
 def serve_report(name: str):
     """Отдаёт сгенерированный отчёт из <project>/reports/."""
-    p = _project()
+    p, redir = _require_project()
+    if redir:
+        return redir
     reports_dir = p / "reports"
+    if not reports_dir.exists():
+        abort(404)
     return send_from_directory(reports_dir, name, as_attachment=False)

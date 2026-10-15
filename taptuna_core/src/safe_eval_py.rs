@@ -144,6 +144,21 @@ fn parse_expr(obj: &Bound<'_, PyAny>) -> PyResult<Expr> {
             Box::new(parse_expr(&req("a")?)?),
             Box::new(parse_expr(&req("b")?)?),
         ),
+        "exists" => {
+            // Принимаем либо {"op":"exists","name":"x"}, либо {"op":"exists","a":{"op":"field","name":"x"}}
+            if let Some(name_obj) = d.get_item("name")? {
+                Expr::Exists(name_obj.extract()?)
+            } else if let Some(a) = d.get_item("a")? {
+                let ad: &Bound<'_, PyDict> = a.downcast()?;
+                let name: String = ad.get_item("name")?
+                    .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("exists: missing 'name'"))?
+                    .extract()?;
+                Expr::Exists(name)
+            } else {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "exists requires 'name' or 'a':{op:field,name}"));
+            }
+        }
         other => {
             return Err(pyo3::exceptions::PyValueError::new_err(format!(
                 "unknown op: {}",

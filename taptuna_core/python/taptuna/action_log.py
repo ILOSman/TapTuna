@@ -169,10 +169,13 @@ def import_action_log(
     conn = open_db(project_dir)
     try:
         cur = conn.cursor()
+        # ← ИЗМЕНЕНО: теперь при повторном sha256 запись не создаётся
+        # (UNIQUE-индекс), SELECT вернёт существующий id.
         cur.execute(
-            """INSERT OR IGNORE INTO action_log
+            """INSERT INTO action_log
                (name, source_path, sha256, row_count, columns_json)
-               VALUES (?,?,?,?,?)""",
+               VALUES (?,?,?,?,?)
+               ON CONFLICT(sha256) DO NOTHING""",
             (entry_name, stored_path, sha, len(entries),
              json.dumps(columns, ensure_ascii=False)),
         )
