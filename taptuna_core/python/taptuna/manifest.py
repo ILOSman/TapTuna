@@ -48,16 +48,53 @@ DEFAULT_POLICIES = {
 
 
 def _get_pip_freeze() -> str:
+    """Возвращает список зависимостей.
+
+    Попытка 1: pip freeze текущим sys.executable (editable install).
+    Попытка 2: python3 -m pip freeze (системный Python — работает в AppImage,
+               где sys.executable — это PyInstaller-бинарь, не Python).
+    Попытка 3: importlib.metadata для ключевых пакетов (последний шанс).
+    """
+    # Попытка 1: текущий интерпретатор
     try:
         out = subprocess.run(
             [sys.executable, "-m", "pip", "freeze"],
-            capture_output=True,
-            text=True,
-            timeout=10,
+            capture_output=True, text=True, timeout=10,
         )
-        return out.stdout.strip()
+        if out.returncode == 0 and out.stdout.strip():
+            return out.stdout.strip()
     except Exception:
-        return ""
+        pass
+
+    # Попытка 2: системный python3 (в AppImage это сработает)
+    try:
+        out = subprocess.run(
+            ["python3", "-m", "pip", "freeze"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if out.returncode == 0 and out.stdout.strip():
+            return out.stdout.strip()
+    except Exception:
+        pass
+
+    # Попытка 3: importlib.metadata для ключевых пакетов
+    try:
+        from importlib.metadata import version, PackageNotFoundError
+        pkgs = ["flask", "jinja2", "werkzeug", "markupsafe",
+                "itsdangerous", "click", "blinker",
+                "pyyaml", "markdown", "taptuna-core"]
+        lines = []
+        for name in pkgs:
+            try:
+                lines.append(f"{name}=={version(name)}")
+            except PackageNotFoundError:
+                pass
+        if lines:
+            return "\n".join(lines)
+    except Exception:
+        pass
+
+    return ""
 
 
 def _get_tshark_version() -> str:

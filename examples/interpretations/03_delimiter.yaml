@@ -3,7 +3,7 @@ kind: declarative
 framing:
   kind: delimiter
   delim: [13, 10]     # \r\n
-  include_delim: false
+  include_delim: true
   max_message: 4096
 fields:
   name: line
@@ -16,4 +16,4 @@ constraints: []
 semantics:
   fields:
     line:
-      meaning: "Строка без завершающего CRLF"
+      meaning: "HTTP-строка с завершающим CRLF"

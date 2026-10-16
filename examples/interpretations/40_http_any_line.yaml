@@ -1,0 +1,19 @@
+name: http_any_line
+kind: declarative
+framing:
+  kind: delimiter
+  delim: [13, 10]
+  include_delim: true
+  max_message: 16384
+fields:
+  name: line
+  fields:
+    - name: line
+      type: utf8
+      offset: 0
+      size: remaining
+constraints: []
+semantics:
+  fields:
+    line:
+      meaning: "Строка HTTP (оба направления)"

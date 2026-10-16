@@ -1,0 +1,19 @@
+name: http_request_only
+kind: declarative
+framing:
+  kind: regex
+  pattern: "^(GET|POST|PUT|DELETE|HEAD|OPTIONS) [^\\r\\n]+ HTTP/1\\.[01]\\r\\n"
+  include_match: true
+  max_message: 8192
+fields:
+  name: request
+  fields:
+    - name: raw_line
+      type: utf8
+      offset: 0
+      size: remaining
+constraints: []
+semantics:
+  fields:
+    raw_line:
+      meaning: "Строка HTTP-запроса"

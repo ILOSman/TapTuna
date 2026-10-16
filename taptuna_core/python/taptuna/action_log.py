@@ -171,11 +171,13 @@ def import_action_log(
         cur = conn.cursor()
         # ← ИЗМЕНЕНО: теперь при повторном sha256 запись не создаётся
         # (UNIQUE-индекс), SELECT вернёт существующий id.
+        # INSERT OR IGNORE работает и с UNIQUE(sha256), и без него.
+        # ON CONFLICT(sha256) требует явного UNIQUE-индекса, которого
+        # может не быть в старой БД.
         cur.execute(
-            """INSERT INTO action_log
+            """INSERT OR IGNORE INTO action_log
                (name, source_path, sha256, row_count, columns_json)
-               VALUES (?,?,?,?,?)
-               ON CONFLICT(sha256) DO NOTHING""",
+               VALUES (?,?,?,?,?)""",
             (entry_name, stored_path, sha, len(entries),
              json.dumps(columns, ensure_ascii=False)),
         )

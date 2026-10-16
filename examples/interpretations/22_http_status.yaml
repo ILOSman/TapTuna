@@ -1,0 +1,19 @@
+name: http_status
+kind: declarative
+framing:
+  kind: regex
+  pattern: "^HTTP/1\\.[01] [0-9]{3} [^\\r\\n]+\\r\\n"
+  include_match: true
+  max_message: 8192
+fields:
+  name: status
+  fields:
+    - name: raw_line
+      type: utf8
+      offset: 0
+      size: remaining
+constraints: []
+semantics:
+  fields:
+    raw_line:
+      meaning: "Строка HTTP-ответа"

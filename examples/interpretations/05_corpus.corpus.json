@@ -1,0 +1,7 @@
+{
+  "name": "demo_corpus",
+  "criteria": {
+    "any_ports": [8080],
+    "min_packets": 1
+  }
+}
